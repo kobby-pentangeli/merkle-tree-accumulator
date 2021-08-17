@@ -1,3 +1,4 @@
+use borsh::{self, BorshDeserialize, BorshSerialize};
 use bytebuffer::ByteBuffer;
 use rand::{thread_rng, Rng};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
@@ -10,7 +11,19 @@ const RANDOM_HASH_BUFFER: usize = 4096;
 
 /// Hash representation
 /// It's most common type for crypto related types
-#[derive(Clone, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash, Copy)]
+#[derive(
+    BorshDeserialize,
+    BorshSerialize,
+    Clone,
+    PartialEq,
+    Eq,
+    PartialOrd,
+    Ord,
+    Serialize,
+    Deserialize,
+    Hash,
+    Copy,
+)]
 pub struct Hash(pub [u8; 32]);
 
 /// Short Hash representation
