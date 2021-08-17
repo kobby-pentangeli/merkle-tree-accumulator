@@ -5,28 +5,28 @@ use serde::{Deserialize, Serialize};
 #[derive(Clone, Debug, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize, Hash, Copy)]
 pub enum Blake {}
 
-const HASH_LENGTH: usize = 32;
-const HASH_SHORT_LENGTH: usize = 20;
+const LONG_HASH_LENGTH: usize = 32;
+const SHORT_HASH_LENGTH: usize = 20;
 
 impl Blake {
     /// Take a bytes in and produce a long byte Hash array
-    pub fn long(src: &[u8]) -> [u8; HASH_LENGTH] {
+    pub fn long(src: &[u8]) -> [u8; LONG_HASH_LENGTH] {
         let blake_hash = Params::new()
-            .hash_length(HASH_LENGTH)
+            .hash_length(LONG_HASH_LENGTH)
             .to_state()
             .update(src)
             .finalize();
-        let mut hash: [u8; HASH_LENGTH] = [0; HASH_LENGTH];
+        let mut hash: [u8; LONG_HASH_LENGTH] = [0; LONG_HASH_LENGTH];
         let a = blake_hash.as_ref().to_vec();
-        hash.copy_from_slice(&a[0..HASH_LENGTH]);
+        hash.copy_from_slice(&a[0..LONG_HASH_LENGTH]);
         hash
     }
 
     /// Take short version of Hash of bytes array
-    pub fn short(src: &[u8]) -> [u8; HASH_SHORT_LENGTH] {
-        let h = Self::get_hash_by_length(src, HASH_SHORT_LENGTH);
-        let mut hash: [u8; HASH_SHORT_LENGTH] = [0; HASH_SHORT_LENGTH];
-        hash.copy_from_slice(&h[0..HASH_SHORT_LENGTH]);
+    pub fn short(src: &[u8]) -> [u8; SHORT_HASH_LENGTH] {
+        let h = Self::get_hash_by_length(src, SHORT_HASH_LENGTH);
+        let mut hash: [u8; SHORT_HASH_LENGTH] = [0; SHORT_HASH_LENGTH];
+        hash.copy_from_slice(&h[0..SHORT_HASH_LENGTH]);
         hash
     }
 
