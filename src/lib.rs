@@ -41,3 +41,5 @@ pub mod error;
 pub mod hash;
 /// Merkle Tree Accumulator
 pub mod mta;
+/// Utils
+pub mod utils;

@@ -15,6 +15,7 @@ bytebuffer = "0.2.1"
 failure = "0.1.8"
 hex = "0.4.3"
 rand = "0.8.4"
+rlp = "0.5.1"
 serde = { version = "1.0", features = ["derive"] }
 serde_derive = "1.0"
 to_vec = "0.1.0"
