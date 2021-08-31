@@ -208,7 +208,7 @@ impl MerkleTreeAccumulator {
     }
 
     /// Convert MTA to bytes
-    pub fn to_bytes(&mut self) -> Vec<u8> {
+    pub fn to_bytes(&self) -> Vec<u8> {
         Self::try_to_vec(self).expect("Failed to convert Merkle Tree Accumulator to bytes.")
     }
 
