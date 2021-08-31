@@ -1,5 +1,5 @@
-use borsh::{self, BorshDeserialize, BorshSerialize};
 use bytebuffer::ByteBuffer;
+use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use rand::{thread_rng, Rng};
 use serde::{de::DeserializeOwned, Deserialize, Serialize};
 use to_vec::ToVec;

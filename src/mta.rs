@@ -2,12 +2,12 @@
 
 use super::hash::Hash;
 use super::utils::RlpItem;
-use borsh::{self, BorshDeserialize, BorshSerialize};
-use serde::{Deserialize, Serialize};
+use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
+use near_sdk::serde::{Deserialize, Serialize};
 
 /// Struct for MTA
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(crate = "serde")]
+#[serde(crate = "near_sdk::serde")]
 pub struct MerkleTreeAccumulator {
     /// Height
     pub height: u128,

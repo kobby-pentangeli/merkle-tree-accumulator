@@ -1,11 +1,13 @@
 //! Utils
 
-use borsh::{self, BorshDeserialize, BorshSerialize};
-use serde::{Deserialize, Serialize};
+//use borsh::{self, BorshDeserialize, BorshSerialize};
+use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
+use near_sdk::serde::{Deserialize, Serialize};
+//use serde::{Deserialize, Serialize};
 
 /// RlpItem
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Default, Deserialize, Serialize)]
-#[serde(crate = "serde")]
+#[serde(crate = "near_sdk::serde")]
 pub struct RlpItem {
     /// Length of the RlpItem
     pub len: usize,
