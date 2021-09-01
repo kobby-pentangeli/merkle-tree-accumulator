@@ -172,7 +172,7 @@ impl MerkleTreeAccumulator {
     /// Verify
     pub fn verify(
         &mut self,
-        proofs: &[&Hash],
+        proofs: &[Hash],
         leaf: &Hash,
         height: u128,
         at: u128,
@@ -196,7 +196,7 @@ impl MerkleTreeAccumulator {
                 .get_root_index_by_height(height)
                 .expect("Failed to retrieve root index by height");
             root = *self.get_root(root_idx).expect("Failed to get root");
-            let mut slice_roots: Vec<&Hash> = Vec::with_capacity(root_idx);
+            let mut slice_roots: Vec<Hash> = Vec::with_capacity(root_idx);
             slice_roots[..root_idx].clone_from_slice(&proofs[..root_idx]);
             self.verify_internal(slice_roots.as_slice(), &root, leaf)
                 .expect("Failed to verify");
@@ -214,7 +214,7 @@ impl MerkleTreeAccumulator {
 
     fn verify_internal(
         &mut self,
-        witnesses: &[&Hash],
+        witnesses: &[Hash],
         root: &Hash,
         leaf: &Hash,
     ) -> Result<(), &str> {
