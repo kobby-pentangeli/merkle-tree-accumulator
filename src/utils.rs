@@ -1,9 +1,7 @@
 //! Utils
 
-//use borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};
-//use serde::{Deserialize, Serialize};
 
 /// RlpItem
 #[derive(BorshDeserialize, BorshSerialize, Clone, Debug, Default, Deserialize, Serialize)]

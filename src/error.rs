@@ -1,17 +1,13 @@
 //! Error types
 
-use failure::Fail;
+use thiserror::Error;
 
-/// Result wrapper
-pub type Result<T> = std::result::Result<T, failure::Error>;
-
-/// Error types
-#[derive(Debug, Fail)]
+#[derive(Clone, Debug, Eq, Error, PartialEq)]
 pub enum Error {
     /// Serialization error
-    #[fail(display = "Serialization error: {}", _0)]
+    #[error("Serialization error: _0")]
     HashSerialize(String),
     /// None error
-    #[fail(display = "Option.None an error")]
+    #[error("Option.None an error")]
     NoneError,
 }

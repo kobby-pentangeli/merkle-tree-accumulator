@@ -1,7 +1,6 @@
 //! Merkle Tree Accumulator
 
-use super::hash::Hash;
-use super::utils::RlpItem;
+use super::{hash::Hash, utils::RlpItem};
 use near_sdk::borsh::{self, BorshDeserialize, BorshSerialize};
 use near_sdk::serde::{Deserialize, Serialize};
 
@@ -120,7 +119,7 @@ impl MerkleTreeAccumulator {
         if self.height == 0 || self.roots.is_empty() {
             self.roots.push(hash);
         } else {
-            let mut root = Hash::generate_random();
+            let mut root = Hash::default();
             for i in 0..self.clone().roots.len() {
                 if self.roots[i].0.is_empty() {
                     root = hash;
@@ -137,7 +136,7 @@ impl MerkleTreeAccumulator {
                         .iter()
                         .position(|x| *x == hash)
                         .expect("Error in lookup");
-                    hash = Hash::generate_random();
+                    hash = Hash::default();
                     let _ = self.roots.remove(index);
                 }
             }
