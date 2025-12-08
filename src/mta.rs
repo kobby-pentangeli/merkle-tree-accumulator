@@ -572,11 +572,11 @@ mod tests {
     fn add_multiple_leaves() {
         let mut acc = MerkleTreeAccumulator::new();
 
-        for i in 0..10 {
+        (0..10).for_each(|i| {
             let data = format!("leaf{i}");
             let leaf = Hash::from_data(data.as_bytes());
             acc.add(leaf).unwrap();
-        }
+        });
 
         assert_eq!(acc.height(), 10);
     }
@@ -598,10 +598,10 @@ mod tests {
     #[test]
     fn generate_proof_batch() {
         let mut acc = MerkleTreeAccumulator::new();
-        for i in 0..5 {
+        (0..5).for_each(|i| {
             let data = format!("leaf{i}");
             acc.add(Hash::from_data(data.as_bytes())).unwrap();
-        }
+        });
 
         let proofs = acc.proof_batch(&[0, 2, 4]).unwrap();
         assert_eq!(proofs.len(), 3);
@@ -657,9 +657,9 @@ mod tests {
             .map(|i| Hash::from_data(format!("leaf{i}").as_bytes()))
             .collect::<Vec<Hash>>();
 
-        for &leaf in &leaves {
+        leaves.iter().for_each(|&leaf| {
             acc.add(leaf).unwrap();
-        }
+        });
 
         let proofs = acc.proof_batch(&[0, 2, 4]).unwrap();
         let batch_leaves = vec![leaves[0], leaves[2], leaves[4]];
@@ -674,9 +674,9 @@ mod tests {
             .map(|i| Hash::from_data(format!("leaf{i}").as_bytes()))
             .collect::<Vec<Hash>>();
 
-        for &leaf in &leaves {
+        leaves.iter().for_each(|&leaf| {
             acc.add(leaf).unwrap();
-        }
+        });
 
         let proofs = acc.proof_batch(&[0, 2]).unwrap();
         let wrong_leaves = vec![leaves[0], Hash::from_data(b"wrong")];

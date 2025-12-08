@@ -133,12 +133,13 @@ impl Hash {
     /// ```
     #[must_use]
     pub fn to_hex(&self) -> String {
-        let mut hex = String::with_capacity(Self::HEX_LEN);
-        for b in &self.0 {
-            use core::fmt::Write;
-            let _ = write!(hex, "{b:02x}");
-        }
-        hex
+        use core::fmt::Write;
+        self.0
+            .iter()
+            .fold(String::with_capacity(Self::HEX_LEN), |mut hex, b| {
+                let _ = write!(hex, "{b:02x}");
+                hex
+            })
     }
 
     /// Creates a hash from a hexadecimal string.
@@ -257,10 +258,7 @@ impl fmt::LowerHex for Hash {
 
 impl fmt::UpperHex for Hash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        for b in &self.0 {
-            write!(f, "{b:02X}")?;
-        }
-        Ok(())
+        self.0.iter().try_for_each(|b| write!(f, "{b:02X}"))
     }
 }
 
