@@ -20,8 +20,8 @@ const DEFAULT_CACHE_SIZE: usize = 1000;
 ///
 /// # Type Parameters
 ///
-/// - `H`: The hasher type implementing `rs_merkle::Hasher`. Use `Sha3Hasher` for
-///   general purposes or `PoseidonHasher` (with `poseidon` feature) for algebraic hashing.
+/// - `H`: The hasher type implementing `rs_merkle::Hasher`. Use `Sha3H` for
+///   general purposes or `PoseidonH` (with `poseidon` feature) for algebraic hashing.
 ///
 /// # Examples
 ///
@@ -541,7 +541,41 @@ impl Proof {
 /// let mut acc = Sha3Accumulator::new();
 /// acc.add(Hash::from_data(b"data")).unwrap();
 /// ```
-pub type Sha3Accumulator = MerkleTreeAccumulator<crate::hash::Sha3Hasher>;
+pub type Sha3Accumulator = MerkleTreeAccumulator<crate::hash::Sha3H>;
+
+/// Type alias for a Merkle tree accumulator using BLAKE3 hash function.
+///
+/// BLAKE3 is a high-performance cryptographic hash function designed for modern
+/// hardware with SIMD instructions and multi-core processors. It's significantly
+/// faster than both SHA2 and SHA3 while maintaining strong security properties.
+///
+/// # Performance
+///
+/// - **Speed**: 15-17× faster than SHA3-256 on modern CPUs
+/// - **Parallelism**: Binary tree structure enables efficient multi-threading
+/// - **Native execution**: Best-in-class performance for high-throughput systems
+/// - **Use case**: Blockchains, distributed systems, high-performance applications
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(feature = "blake3")]
+/// # {
+/// use merkle_tree_accumulator::{Hash, Blake3Accumulator};
+///
+/// let mut acc = Blake3Accumulator::new();
+/// acc.add(Hash::from_data(b"data")).unwrap();
+/// # }
+/// ```
+///
+/// # Feature Flag
+///
+/// Requires the `blake3` feature:
+/// ```toml
+/// merkle-tree-accumulator = { version = "0.3", features = ["blake3"] }
+/// ```
+#[cfg(feature = "blake3")]
+pub type Blake3Accumulator = MerkleTreeAccumulator<crate::hash::Blake3H>;
 
 /// Type alias for a Merkle tree accumulator using Poseidon hash function.
 ///
@@ -574,14 +608,14 @@ pub type Sha3Accumulator = MerkleTreeAccumulator<crate::hash::Sha3Hasher>;
 /// merkle-tree-accumulator = { version = "0.3", features = ["poseidon"] }
 /// ```
 #[cfg(feature = "poseidon")]
-pub type PoseidonAccumulator = MerkleTreeAccumulator<crate::hash::PoseidonHasher>;
+pub type PoseidonAccumulator = MerkleTreeAccumulator<crate::hash::PoseidonH>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::hash::Sha3Hasher;
+    use crate::hash::Sha3H;
 
-    type TestAccumulator = MerkleTreeAccumulator<Sha3Hasher>;
+    type TestAccumulator = MerkleTreeAccumulator<Sha3H>;
 
     #[test]
     fn new_accumulator() {
@@ -781,11 +815,58 @@ mod tests {
     }
 
     #[test]
+    #[cfg(feature = "blake3")]
+    fn blake3_hasher_works() {
+        use crate::hash::Blake3H;
+
+        type Blake3Acc = MerkleTreeAccumulator<Blake3H>;
+
+        let mut blake3_acc = Blake3Acc::new();
+        let mut sha3_acc = TestAccumulator::new();
+
+        let leaf1 = Hash::from_data(b"data1");
+        let leaf2 = Hash::from_data(b"data2");
+
+        // Add same leaves to both accumulators
+        blake3_acc.add(leaf1).unwrap();
+        blake3_acc.add(leaf2).unwrap();
+        sha3_acc.add(leaf1).unwrap();
+        sha3_acc.add(leaf2).unwrap();
+
+        assert_eq!(blake3_acc.height(), 2);
+        assert_eq!(sha3_acc.height(), 2);
+
+        // Roots should be different because different hash functions
+        assert_ne!(blake3_acc.root().unwrap(), sha3_acc.root().unwrap());
+
+        // Proofs should work with BLAKE3 hasher
+        let proof = blake3_acc.prove(&[0]).unwrap();
+        assert!(blake3_acc.verify(&proof, &[leaf1]).is_ok());
+
+        // Batch proofs should work with BLAKE3 hasher
+        let leaf3 = Hash::from_data(b"data3");
+        let leaf4 = Hash::from_data(b"data4");
+        let leaf5 = Hash::from_data(b"data5");
+        let leaf6 = Hash::from_data(b"data6");
+        let leaf7 = Hash::from_data(b"data7");
+
+        blake3_acc.add(leaf3).unwrap();
+        blake3_acc.add(leaf4).unwrap();
+        blake3_acc.add(leaf5).unwrap();
+        blake3_acc.add(leaf6).unwrap();
+        blake3_acc.add(leaf7).unwrap();
+
+        let batch_proof = blake3_acc.prove(&[0, 3, 5]).unwrap();
+        let leaves = vec![leaf1, leaf4, leaf6];
+        assert!(blake3_acc.verify(&batch_proof, &leaves).is_ok());
+    }
+
+    #[test]
     #[cfg(feature = "poseidon")]
     fn poseidon_hasher_works() {
-        use crate::hash::PoseidonHasher;
+        use crate::hash::PoseidonH;
 
-        type PoseidonAcc = MerkleTreeAccumulator<PoseidonHasher>;
+        type PoseidonAcc = MerkleTreeAccumulator<PoseidonH>;
 
         let mut poseidon_acc = PoseidonAcc::new();
         let mut sha3_acc = TestAccumulator::new();

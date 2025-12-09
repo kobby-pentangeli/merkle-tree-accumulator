@@ -5,8 +5,9 @@
 //!
 //! # Hasher Implementations
 //!
-//! - [`Sha3Hasher`]: SHA3-256 hasher (default, general-purpose)
-//! - [`PoseidonHasher`]: Poseidon hasher (algebraic hash for arithmetic circuits)
+//! - [`Sha3H`]: SHA3-256 hasher (default, general-purpose, standardized)
+//! - [`Blake3H`]: BLAKE3 hasher (high-performance for throughput-critical systems)
+//! - [`PoseidonH`]: Poseidon hasher (algebraic hash for arithmetic circuits)
 
 use alloc::format;
 use alloc::string::String;
@@ -17,13 +18,18 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
 
-mod sha3_hasher;
-pub use sha3_hasher::Sha3Hasher;
+mod sha3_h;
+pub use sha3_h::Sha3H;
+
+#[cfg(feature = "blake3")]
+mod blake3_h;
+#[cfg(feature = "blake3")]
+pub use blake3_h::Blake3H;
 
 #[cfg(feature = "poseidon")]
-mod poseidon;
+mod poseidon_h;
 #[cfg(feature = "poseidon")]
-pub use poseidon::PoseidonHasher;
+pub use poseidon_h::PoseidonH;
 
 /// A 256-bit (32-byte) cryptographic hash.
 ///

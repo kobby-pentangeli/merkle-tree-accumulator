@@ -23,6 +23,7 @@
 //! # Features
 //!
 //! - `std` (default): Enable standard library support
+//! - `blake3`: Enable BLAKE3 hasher for high-performance applications
 //! - `poseidon`: Enable Poseidon hasher for algebraic hash operations
 
 #![cfg_attr(not(feature = "std"), no_std)]
@@ -55,9 +56,13 @@ pub mod hash;
 pub mod mta;
 
 pub use error::Error;
+#[cfg(feature = "blake3")]
+pub use hash::Blake3H;
 #[cfg(feature = "poseidon")]
-pub use hash::PoseidonHasher;
-pub use hash::{Hash, Sha3Hasher};
+pub use hash::PoseidonH;
+pub use hash::{Hash, Sha3H};
+#[cfg(feature = "blake3")]
+pub use mta::Blake3Accumulator;
 #[cfg(feature = "poseidon")]
 pub use mta::PoseidonAccumulator;
 pub use mta::{MerkleTreeAccumulator, Proof, Sha3Accumulator};

@@ -15,11 +15,11 @@ use rs_merkle::Hasher;
 /// ```ignore
 /// # #[cfg(feature = "poseidon")]
 /// # {
-/// use merkle_tree_accumulator::hash::PoseidonHasher;
+/// use merkle_tree_accumulator::hash::PoseidonH;
 /// use rs_merkle::Hasher;
 ///
 /// let data = b"hello world";
-/// let hash = PoseidonHasher::hash(data);
+/// let hash = PoseidonH::hash(data);
 /// assert_eq!(hash.len(), 32);
 /// # }
 /// ```
@@ -31,9 +31,9 @@ use rs_merkle::Hasher;
 /// merkle-tree-accumulator = { version = "0.3", features = ["poseidon"] }
 /// ```
 #[derive(Clone, Copy, Debug)]
-pub struct PoseidonHasher;
+pub struct PoseidonH;
 
-impl Hasher for PoseidonHasher {
+impl Hasher for PoseidonH {
     type Hash = [u8; 32];
 
     fn hash(data: &[u8]) -> Self::Hash {
@@ -115,26 +115,26 @@ mod tests {
         let left = [1u8; 32];
         let right = [2u8; 32];
 
-        let hash1 = PoseidonHasher::hash(data);
-        let hash2 = PoseidonHasher::hash(data);
+        let hash1 = PoseidonH::hash(data);
+        let hash2 = PoseidonH::hash(data);
         assert_eq!(hash1, hash2);
         assert_eq!(hash1.len(), 32);
 
         // Concat and hash should work with two inputs
-        let concat_hash1 = PoseidonHasher::concat_and_hash(&left, Some(&right));
-        let concat_hash2 = PoseidonHasher::concat_and_hash(&left, Some(&right));
+        let concat_hash1 = PoseidonH::concat_and_hash(&left, Some(&right));
+        let concat_hash2 = PoseidonH::concat_and_hash(&left, Some(&right));
         assert_eq!(concat_hash1, concat_hash2);
         assert_ne!(concat_hash1, left);
         assert_ne!(concat_hash1, right);
 
         // Concat and hash should work with single input
-        let single_hash1 = PoseidonHasher::concat_and_hash(&left, None);
-        let single_hash2 = PoseidonHasher::concat_and_hash(&left, None);
+        let single_hash1 = PoseidonH::concat_and_hash(&left, None);
+        let single_hash2 = PoseidonH::concat_and_hash(&left, None);
         assert_eq!(single_hash1, single_hash2);
 
         // Poseidon and SHA3 should produce different outputs
-        let poseidon_hash = PoseidonHasher::hash(data);
-        let sha3_hash = crate::hash::Sha3Hasher::hash(data);
+        let poseidon_hash = PoseidonH::hash(data);
+        let sha3_hash = crate::hash::Sha3H::hash(data);
         assert_ne!(poseidon_hash, sha3_hash);
     }
 }

@@ -12,17 +12,17 @@ use rs_merkle::Hasher;
 /// # Examples
 ///
 /// ```
-/// # use merkle_tree_accumulator::hash::Sha3Hasher;
+/// # use merkle_tree_accumulator::hash::Sha3H;
 /// use rs_merkle::Hasher;
 ///
 /// let data = b"hello world";
-/// let hash = Sha3Hasher::hash(data);
+/// let hash = Sha3H::hash(data);
 /// assert_eq!(hash.len(), 32);
 /// ```
 #[derive(Clone, Copy, Debug)]
-pub struct Sha3Hasher;
+pub struct Sha3H;
 
-impl Hasher for Sha3Hasher {
+impl Hasher for Sha3H {
     type Hash = [u8; 32];
 
     fn hash(data: &[u8]) -> Self::Hash {
@@ -48,8 +48,8 @@ mod tests {
     #[test]
     fn sha3_hasher_hash() {
         let data = b"test data";
-        let hash1 = Sha3Hasher::hash(data);
-        let hash2 = Sha3Hasher::hash(data);
+        let hash1 = Sha3H::hash(data);
+        let hash2 = Sha3H::hash(data);
         assert_eq!(hash1, hash2);
         assert_eq!(hash1.len(), 32);
     }
@@ -58,8 +58,8 @@ mod tests {
     fn sha3_hasher_concat_and_hash() {
         let left = [1u8; 32];
         let right = [2u8; 32];
-        let hash1 = Sha3Hasher::concat_and_hash(&left, Some(&right));
-        let hash2 = Sha3Hasher::concat_and_hash(&left, Some(&right));
+        let hash1 = Sha3H::concat_and_hash(&left, Some(&right));
+        let hash2 = Sha3H::concat_and_hash(&left, Some(&right));
         assert_eq!(hash1, hash2);
         assert_ne!(hash1, left);
         assert_ne!(hash1, right);
@@ -68,8 +68,8 @@ mod tests {
     #[test]
     fn sha3_hasher_concat_single() {
         let left = [1u8; 32];
-        let hash1 = Sha3Hasher::concat_and_hash(&left, None);
-        let hash2 = Sha3Hasher::concat_and_hash(&left, None);
+        let hash1 = Sha3H::concat_and_hash(&left, None);
+        let hash2 = Sha3H::concat_and_hash(&left, None);
         assert_eq!(hash1, hash2);
     }
 }
