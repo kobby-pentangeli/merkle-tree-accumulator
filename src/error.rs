@@ -21,15 +21,6 @@ pub enum Error {
         max: u64,
     },
 
-    /// Height mismatch between tree and proof.
-    #[error("Height mismatch: tree is at {tree_height}, proof is for {proof_height}")]
-    HeightMismatch {
-        /// Current tree height.
-        tree_height: u64,
-        /// Proof height.
-        proof_height: u64,
-    },
-
     /// Operation requires a non-empty tree.
     #[error("Cannot operate on empty tree")]
     EmptyTree,
@@ -44,22 +35,18 @@ pub enum Error {
     /// Serialization or deserialization failed.
     #[error("Serialization error: {0}")]
     Serialization(String),
-
-    /// Newer witness not allowed for this accumulator configuration.
-    #[error("Newer witness not allowed")]
-    NewerWitnessNotAllowed,
-
-    /// Root index is invalid or out of range.
-    #[error("Invalid root index: {index}")]
-    InvalidRootIndex {
-        /// The invalid root index.
-        index: usize,
-    },
 }
 
 #[cfg(feature = "std")]
-impl From<bincode::Error> for Error {
-    fn from(err: bincode::Error) -> Self {
+impl From<bincode::error::EncodeError> for Error {
+    fn from(err: bincode::error::EncodeError) -> Self {
+        Self::Serialization(err.to_string())
+    }
+}
+
+#[cfg(feature = "std")]
+impl From<bincode::error::DecodeError> for Error {
+    fn from(err: bincode::error::DecodeError) -> Self {
         Self::Serialization(err.to_string())
     }
 }

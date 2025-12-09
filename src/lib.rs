@@ -6,6 +6,7 @@
 //! - **Height tracking**: Accumulator maintains height for historical verification
 //! - **Witness caching**: LRU cache for efficient verification of old proofs
 //! - **Chain-agnostic**: No blockchain-specific dependencies
+//! - **Batch operations**: Optimized batch proof generation and verification
 //!
 //! # Examples
 //!
@@ -52,8 +53,12 @@ pub mod hash;
 pub mod mta;
 
 pub use error::Error;
-pub use hash::Hash;
-pub use mta::MerkleTreeAccumulator;
+#[cfg(feature = "poseidon")]
+pub use hash::PoseidonHasher;
+pub use hash::{Hash, Sha3Hasher};
+#[cfg(feature = "poseidon")]
+pub use mta::PoseidonAccumulator;
+pub use mta::{MerkleTreeAccumulator, Proof, Sha3Accumulator};
 
 /// Result type for accumulator operations.
 pub type Result<T> = core::result::Result<T, Error>;

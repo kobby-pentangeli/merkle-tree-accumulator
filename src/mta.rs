@@ -4,10 +4,9 @@ use alloc::vec::Vec;
 use core::num::NonZeroUsize;
 
 use lru::LruCache;
-use rs_merkle::{MerkleProof, MerkleTree};
+use rs_merkle::{Hasher, MerkleProof, MerkleTree};
 use serde::{Deserialize, Serialize};
 
-use crate::hash::Sha3Hasher;
 use crate::{Error, Hash, Result};
 
 /// Default cache size for witness caching.
@@ -15,16 +14,20 @@ const DEFAULT_CACHE_SIZE: usize = 1000;
 
 /// A Merkle tree accumulator with append-only semantics and witness caching.
 ///
-/// The accumulator maintains a Merkle tree and provides efficient proof
-/// generation and verification for elements in the set. It is designed
-/// for append-only workloads where elements are continuously added but never removed.
+/// The accumulator is generic over the hash function, allowing you to choose
+/// between different hashers like SHA3-256 (default) or Poseidon (algebraic hash).
+///
+/// # Type Parameters
+///
+/// - `H`: The hasher type implementing `rs_merkle::Hasher`. Use `Sha3Hasher` for
+///   general purposes or `PoseidonHasher` (with `poseidon` feature) for algebraic hashing.
 ///
 /// # Examples
 ///
 /// ```
-/// use merkle_tree_accumulator::{Hash, MerkleTreeAccumulator};
+/// use merkle_tree_accumulator::{Hash, Sha3Accumulator};
 ///
-/// let mut acc = MerkleTreeAccumulator::new();
+/// let mut acc = Sha3Accumulator::new();
 /// assert_eq!(acc.height(), 0);
 ///
 /// // Add some elements
@@ -37,9 +40,9 @@ const DEFAULT_CACHE_SIZE: usize = 1000;
 /// assert_eq!(acc.height(), 2);
 /// ```
 #[derive(Clone)]
-pub struct MerkleTreeAccumulator {
+pub struct MerkleTreeAccumulator<H: Hasher<Hash = [u8; 32]>> {
     /// Internal Merkle tree.
-    tree: MerkleTree<Sha3Hasher>,
+    tree: MerkleTree<H>,
     /// Total number of elements added (accumulator height).
     height: u64,
     /// Leaves that have been added to the accumulator.
@@ -50,13 +53,13 @@ pub struct MerkleTreeAccumulator {
     newer_witness_allowed: bool,
 }
 
-impl Default for MerkleTreeAccumulator {
+impl<H: Hasher<Hash = [u8; 32]>> Default for MerkleTreeAccumulator<H> {
     fn default() -> Self {
         Self::new()
     }
 }
 
-impl core::fmt::Debug for MerkleTreeAccumulator {
+impl<H: Hasher<Hash = [u8; 32]>> core::fmt::Debug for MerkleTreeAccumulator<H> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("MerkleTreeAccumulator")
             .field("height", &self.height)
@@ -66,15 +69,15 @@ impl core::fmt::Debug for MerkleTreeAccumulator {
     }
 }
 
-impl MerkleTreeAccumulator {
+impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
     /// Creates a new empty accumulator with default cache size.
     ///
     /// # Examples
     ///
     /// ```
-    /// # use merkle_tree_accumulator::MerkleTreeAccumulator;
+    /// # use merkle_tree_accumulator::Sha3Accumulator;
     ///
-    /// let acc = MerkleTreeAccumulator::new();
+    /// let acc = Sha3Accumulator::new();
     /// assert_eq!(acc.height(), 0);
     /// ```
     #[must_use]
@@ -92,9 +95,9 @@ impl MerkleTreeAccumulator {
     /// # Examples
     ///
     /// ```
-    /// # use merkle_tree_accumulator::MerkleTreeAccumulator;
+    /// # use merkle_tree_accumulator::Sha3Accumulator;
     ///
-    /// let acc = MerkleTreeAccumulator::with_cache_size(500);
+    /// let acc = Sha3Accumulator::with_cache_size(500);
     /// assert_eq!(acc.height(), 0);
     /// ```
     #[must_use]
@@ -121,9 +124,9 @@ impl MerkleTreeAccumulator {
     /// # Examples
     ///
     /// ```
-    /// # use merkle_tree_accumulator::MerkleTreeAccumulator;
+    /// # use merkle_tree_accumulator::Sha3Accumulator;
     ///
-    /// let acc = MerkleTreeAccumulator::new();
+    /// let acc = Sha3Accumulator::new();
     /// assert_eq!(acc.height(), 0);
     /// ```
     #[must_use]
@@ -140,9 +143,9 @@ impl MerkleTreeAccumulator {
     /// # Examples
     ///
     /// ```
-    /// # use merkle_tree_accumulator::{MerkleTreeAccumulator, Hash};
+    /// # use merkle_tree_accumulator::{Sha3Accumulator, Hash};
     ///
-    /// let mut acc = MerkleTreeAccumulator::new();
+    /// let mut acc = Sha3Accumulator::new();
     /// assert!(acc.root().is_err());
     ///
     /// acc.add(Hash::from_data(b"data")).unwrap();
@@ -164,9 +167,9 @@ impl MerkleTreeAccumulator {
     /// # Examples
     ///
     /// ```
-    /// use merkle_tree_accumulator::{MerkleTreeAccumulator, Hash};
+    /// use merkle_tree_accumulator::{Sha3Accumulator, Hash};
     ///
-    /// let mut acc = MerkleTreeAccumulator::new();
+    /// let mut acc = Sha3Accumulator::new();
     /// let leaf = Hash::from_data(b"my data");
     /// acc.add(leaf).unwrap();
     /// assert_eq!(acc.height(), 1);
@@ -183,68 +186,20 @@ impl MerkleTreeAccumulator {
         Ok(())
     }
 
-    /// Generates a Merkle proof for a leaf at the given index.
+    /// Generates a cryptographic proof for one or more leaf indices.
     ///
-    /// # Errors
+    /// This method handles both single-leaf and batch proofs:
+    /// - **Single proof**: Pass a slice with one index, e.g., `&[0]`
+    /// - **Batch proof**: Pass a slice with multiple indices, e.g., `&[0, 3, 7]`
     ///
-    /// Returns `Error::IndexOutOfBounds` if the index is >= height.
-    /// Returns `Error::EmptyTree` if the tree is empty.
+    /// Batch proofs are more storage-efficient than generating individual proofs
+    /// because sibling hashes are shared across all leaves.
     ///
-    /// # Examples
+    /// # Storage Efficiency
     ///
-    /// ```
-    /// use merkle_tree_accumulator::{MerkleTreeAccumulator, Hash};
-    ///
-    /// let mut acc = MerkleTreeAccumulator::new();
-    /// acc.add(Hash::from_data(b"data1")).unwrap();
-    /// acc.add(Hash::from_data(b"data2")).unwrap();
-    ///
-    /// let proof = acc.proof(0).unwrap();
-    /// ```
-    pub fn proof(&self, index: u64) -> Result<AccumulatorProof> {
-        if index >= self.height {
-            return Err(Error::IndexOutOfBounds {
-                index,
-                max: self.height.saturating_sub(1),
-            });
-        }
-
-        if self.height == 0 {
-            return Err(Error::EmptyTree);
-        }
-
-        #[allow(clippy::cast_possible_truncation)]
-        let indices = vec![index as usize];
-        let proof = self
-            .tree
-            .proof(&indices)
-            .proof_hashes()
-            .iter()
-            .map(|h| Hash::from(*h))
-            .collect();
-
-        Ok(AccumulatorProof {
-            leaf_index: index,
-            hashes: proof,
-            height: self.height,
-        })
-    }
-
-    /// Generates individual Merkle proofs for multiple leaves.
-    ///
-    /// This method creates independent proofs for each requested leaf index.
-    /// Each proof can be verified separately and contains its own complete set
-    /// of sibling hashes needed to reconstruct the root.
-    ///
-    /// # Design Note
-    ///
-    /// This implementation prioritizes API simplicity and independent proof verification
-    /// over storage efficiency. Each `AccumulatorProof` is self-contained and can be
-    /// verified without reference to other proofs.
-    ///
-    /// For applications requiring maximum storage efficiency, use the
-    /// `MultiProof` type, which is a compact multi-proof format where
-    /// sibling hashes are shared across proofs.
+    /// For a tree with height H and N leaves to prove:
+    /// - Single proof (N=1): ~H hashes
+    /// - Batch proof (N>1): ~N + (H - `log_2` N) hashes (shared sibling hashes)
     ///
     /// # Errors
     ///
@@ -253,125 +208,109 @@ impl MerkleTreeAccumulator {
     ///
     /// # Examples
     ///
+    /// Single leaf:
     /// ```
-    /// use merkle_tree_accumulator::{MerkleTreeAccumulator, Hash};
+    /// use merkle_tree_accumulator::{Sha3Accumulator, Hash};
     ///
-    /// let mut acc = MerkleTreeAccumulator::new();
-    /// acc.add(Hash::from_data(b"data1")).unwrap();
-    /// acc.add(Hash::from_data(b"data2")).unwrap();
-    /// acc.add(Hash::from_data(b"data3")).unwrap();
+    /// let mut acc = Sha3Accumulator::new();
+    /// acc.add(Hash::from_data(b"data")).unwrap();
     ///
-    /// // Generate independent proofs for multiple leaves
-    /// let proofs = acc.proof_batch(&[0, 2]).unwrap();
-    /// assert_eq!(proofs.len(), 2);
-    ///
-    /// // Each proof can be verified independently
-    /// let leaf0 = Hash::from_data(b"data1");
-    /// let leaf2 = Hash::from_data(b"data3");
-    /// acc.verify(&proofs[0], &leaf0).unwrap();
-    /// acc.verify(&proofs[1], &leaf2).unwrap();
+    /// let proof = acc.prove(&[0]).unwrap();
     /// ```
-    pub fn proof_batch(&self, indices: &[u64]) -> Result<Vec<AccumulatorProof>> {
+    ///
+    /// Multiple leaves:
+    /// ```
+    /// use merkle_tree_accumulator::{Sha3Accumulator, Hash};
+    ///
+    /// let mut acc = Sha3Accumulator::new();
+    /// (0..10).for_each(|i| {
+    ///     acc.add(Hash::from_data(format!("data{i}").as_bytes())).unwrap();
+    /// });
+    ///
+    /// let proof = acc.prove(&[0, 3, 7]).unwrap();
+    /// ```
+    pub fn prove(&self, indices: &[u64]) -> Result<Proof> {
         if self.height == 0 {
             return Err(Error::EmptyTree);
         }
 
-        indices
+        indices.iter().try_for_each(|&index| {
+            if index >= self.height {
+                Err(Error::IndexOutOfBounds {
+                    index,
+                    max: self.height.saturating_sub(1),
+                })
+            } else {
+                Ok(())
+            }
+        })?;
+
+        #[allow(clippy::cast_possible_truncation)]
+        let tree_indices = indices.iter().map(|&i| i as usize).collect::<Vec<usize>>();
+
+        let proof_hashes = self
+            .tree
+            .proof(&tree_indices)
+            .proof_hashes()
             .iter()
-            .map(|&index| self.proof(index))
-            .collect::<Result<Vec<_>>>()
+            .map(|h| Hash::from(*h))
+            .collect::<Vec<Hash>>();
+
+        Ok(Proof {
+            indices: indices.to_vec(),
+            hashes: proof_hashes,
+            height: self.height,
+        })
     }
 
-    /// Verifies a proof for a given leaf.
+    /// Verifies a proof for one or more leaves.
+    ///
+    /// This method handles both single-leaf and batch proofs. The number of leaves
+    /// must match the number of indices in the proof.
     ///
     /// # Errors
     ///
-    /// Returns an error if the proof is invalid or if cache validation fails.
+    /// Returns an error if:
+    /// - The proof is invalid or if cache validation fails
+    /// - The number of leaves doesn't match the proof indices
+    /// - The tree is empty
     ///
     /// # Examples
     ///
+    /// Single leaf:
     /// ```
-    /// use merkle_tree_accumulator::{MerkleTreeAccumulator, Hash};
+    /// use merkle_tree_accumulator::{Sha3Accumulator, Hash};
     ///
-    /// let mut acc = MerkleTreeAccumulator::new();
+    /// let mut acc = Sha3Accumulator::new();
     /// let leaf = Hash::from_data(b"data");
     /// acc.add(leaf).unwrap();
     ///
-    /// let proof = acc.proof(0).unwrap();
-    /// acc.verify(&proof, &leaf).unwrap();
+    /// let proof = acc.prove(&[0]).unwrap();
+    /// acc.verify(&proof, &[leaf]).unwrap();
     /// ```
-    pub fn verify(&self, proof: &AccumulatorProof, leaf: &Hash) -> Result<()> {
-        if self.height == 0 {
-            return Err(Error::EmptyTree);
-        }
-
-        // Check if we need to validate against cache
-        if !self.newer_witness_allowed && proof.height < self.height && !self.cache.contains(leaf) {
-            return Err(Error::InvalidWitness {
-                height: proof.height,
-            });
-        }
-
-        // Verify using rs-merkle
-        let root = self.root()?;
-        let proof_hashes: Vec<[u8; 32]> = proof.hashes.iter().map(|h| h.into_bytes()).collect();
-
-        let merkle_proof = MerkleProof::<Sha3Hasher>::new(proof_hashes);
-        #[allow(clippy::cast_possible_truncation)]
-        let indices = vec![proof.leaf_index as usize];
-
-        if merkle_proof.verify(
-            root.into_bytes(),
-            &indices,
-            &[leaf.into_bytes()],
-            self.leaves.len(),
-        ) {
-            Ok(())
-        } else {
-            Err(Error::InvalidProof {
-                expected: root.to_hex(),
-                actual: leaf.to_hex(),
-            })
-        }
-    }
-
-    /// Verifies multiple independent proofs with cache validation.
     ///
-    /// This method verifies each proof individually, similar to calling `verify()`
-    /// in a loop, but with a single root retrieval for efficiency. Each proof is
-    /// validated against the cache and then verified independently.
-    ///
-    /// # Design Note
-    ///
-    /// This verifies **independent proofs** generated by `proof_batch()`. Each proof
-    /// is self-contained and verified separately. For applications requiring a more
-    /// storage-efficient approach, use `verify_multi_proof()` with `MultiProof`
-    /// that shares sibling hashes across leaves.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if any proof is invalid or if cache validation fails for any leaf.
-    ///
-    /// # Examples
-    ///
+    /// Multiple leaves:
     /// ```
-    /// use merkle_tree_accumulator::{MerkleTreeAccumulator, Hash};
+    /// use merkle_tree_accumulator::{Sha3Accumulator, Hash};
     ///
-    /// let mut acc = MerkleTreeAccumulator::new();
-    /// let leaf1 = Hash::from_data(b"data1");
-    /// let leaf2 = Hash::from_data(b"data2");
-    /// acc.add(leaf1).unwrap();
-    /// acc.add(leaf2).unwrap();
+    /// let mut acc = Sha3Accumulator::new();
+    /// (0..10).for_each(|i| {
+    ///     acc.add(Hash::from_data(format!("data{i}").as_bytes())).unwrap();
+    /// });
     ///
-    /// let proofs = acc.proof_batch(&[0, 1]).unwrap();
-    /// let leaves = vec![leaf1, leaf2];
-    /// acc.verify_batch(&proofs, &leaves).unwrap();
+    /// let proof = acc.prove(&[0, 3, 7]).unwrap();
+    /// let leaves = vec![
+    ///     Hash::from_data(b"data0"),
+    ///     Hash::from_data(b"data3"),
+    ///     Hash::from_data(b"data7"),
+    /// ];
+    /// acc.verify(&proof, &leaves).unwrap();
     /// ```
-    pub fn verify_batch(&self, proofs: &[AccumulatorProof], leaves: &[Hash]) -> Result<()> {
-        if proofs.len() != leaves.len() {
+    pub fn verify(&self, proof: &Proof, leaves: &[Hash]) -> Result<()> {
+        if proof.indices.len() != leaves.len() {
             return Err(Error::Serialization(format!(
-                "Proof count ({}) does not match leaf count ({})",
-                proofs.len(),
+                "Proof index count ({}) does not match leaf count ({})",
+                proof.indices.len(),
                 leaves.len()
             )));
         }
@@ -380,47 +319,48 @@ impl MerkleTreeAccumulator {
             return Err(Error::EmptyTree);
         }
 
-        let root = self.root()?;
-
-        proofs
-            .iter()
-            .zip(leaves.iter())
-            .try_for_each(|(proof, leaf)| {
-                // Validate cache
-                if !self.newer_witness_allowed
-                    && proof.height < self.height
-                    && !self.cache.contains(leaf)
-                {
-                    return Err(Error::InvalidWitness {
-                        height: proof.height,
-                    });
-                }
-
-                // Verify proof
-                let proof_hashes = proof
-                    .hashes
-                    .iter()
-                    .map(|h| h.into_bytes())
-                    .collect::<Vec<[u8; 32]>>();
-
-                let merkle_proof = MerkleProof::<Sha3Hasher>::new(proof_hashes);
-                #[allow(clippy::cast_possible_truncation)]
-                let indices = vec![proof.leaf_index as usize];
-
-                if merkle_proof.verify(
-                    root.into_bytes(),
-                    &indices,
-                    &[leaf.into_bytes()],
-                    self.leaves.len(),
-                ) {
+        if !self.newer_witness_allowed && proof.height < self.height {
+            leaves.iter().try_for_each(|leaf| {
+                if self.cache.contains(leaf) {
                     Ok(())
                 } else {
-                    Err(Error::InvalidProof {
-                        expected: root.to_hex(),
-                        actual: leaf.to_hex(),
+                    Err(Error::InvalidWitness {
+                        height: proof.height,
                     })
                 }
+            })?;
+        }
+
+        let root = self.root()?;
+        let proof_hashes = proof
+            .hashes
+            .iter()
+            .map(|h| h.into_bytes())
+            .collect::<Vec<[u8; 32]>>();
+        let merkle_proof = MerkleProof::<H>::new(proof_hashes);
+
+        #[allow(clippy::cast_possible_truncation)]
+        let indices = proof
+            .indices
+            .iter()
+            .map(|&i| i as usize)
+            .collect::<Vec<usize>>();
+        let leaf_hashes = leaves
+            .iter()
+            .map(|h| h.into_bytes())
+            .collect::<Vec<[u8; 32]>>();
+
+        if merkle_proof.verify(root.into_bytes(), &indices, &leaf_hashes, self.leaves.len()) {
+            Ok(())
+        } else {
+            let computed_root = merkle_proof
+                .root(&indices, &leaf_hashes, self.leaves.len())
+                .unwrap_or([0u8; 32]);
+            Err(Error::InvalidProof {
+                expected: root.to_hex(),
+                actual: Hash::from(computed_root).to_hex(),
             })
+        }
     }
 
     /// Sets whether newer witnesses are allowed for verification.
@@ -431,9 +371,9 @@ impl MerkleTreeAccumulator {
     /// # Examples
     ///
     /// ```
-    /// use merkle_tree_accumulator::MerkleTreeAccumulator;
+    /// use merkle_tree_accumulator::Sha3Accumulator;
     ///
-    /// let mut acc = MerkleTreeAccumulator::new();
+    /// let mut acc = Sha3Accumulator::new();
     /// acc.set_newer_witness_allowed(true);
     /// ```
     pub const fn set_newer_witness_allowed(&mut self, allowed: bool) {
@@ -445,9 +385,9 @@ impl MerkleTreeAccumulator {
     /// # Examples
     ///
     /// ```
-    /// use merkle_tree_accumulator::{MerkleTreeAccumulator, Hash};
+    /// use merkle_tree_accumulator::{Sha3Accumulator, Hash};
     ///
-    /// let mut acc = MerkleTreeAccumulator::new();
+    /// let mut acc = Sha3Accumulator::new();
     /// let leaf = Hash::from_data(b"data");
     /// acc.add(leaf).unwrap();
     /// assert!(acc.contains_in_cache(&leaf));
@@ -467,12 +407,12 @@ impl MerkleTreeAccumulator {
     /// Returns `Error::Serialization` if serialization fails.
     #[cfg(feature = "std")]
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        let data = SerializedAccumulator {
+        let data = Accumulator {
             height: self.height,
             leaves: self.leaves.clone(),
             newer_witness_allowed: self.newer_witness_allowed,
         };
-        bincode::serialize(&data).map_err(Into::into)
+        bincode::serde::encode_to_vec(&data, bincode::config::standard()).map_err(Into::into)
     }
 
     /// Deserializes an accumulator from bytes.
@@ -486,7 +426,8 @@ impl MerkleTreeAccumulator {
     /// Should not panic as `DEFAULT_CACHE_SIZE` is a non-zero constant.
     #[cfg(feature = "std")]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let data: SerializedAccumulator = bincode::deserialize(bytes)?;
+        let (data, _): (Accumulator, _) =
+            bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
         let tree = MerkleTree::from_leaves(&data.leaves);
 
         Ok(Self {
@@ -504,27 +445,66 @@ impl MerkleTreeAccumulator {
 /// Serialization helper for `MerkleTreeAccumulator`.
 #[cfg(feature = "std")]
 #[derive(Serialize, Deserialize)]
-struct SerializedAccumulator {
+struct Accumulator {
     height: u64,
     leaves: Vec<[u8; 32]>,
     newer_witness_allowed: bool,
 }
 
-/// A proof that a leaf exists in the accumulator at a specific height.
+/// A cryptographic proof that one or more leaves exist in the accumulator.
 ///
-/// This wraps the proof hashes along with metadata about when the proof
-/// was generated.
+/// This struct handles both single-leaf and batch proofs efficiently:
+/// - **Single proof**: `indices` contains one element, `hashes` contains sibling hashes for that path
+/// - **Batch proof**: `indices` contains multiple elements, `hashes` are shared across all proofs
+///
+/// # Storage Efficiency
+///
+/// For a tree with height H and N leaves to prove:
+/// - Single proof (N=1): ~H hashes
+/// - Batch proof (N>1): ~N + (H - `log_2`N) hashes (shared sibling hashes)
+///
+/// # Examples
+///
+/// Single proof:
+/// ```
+/// use merkle_tree_accumulator::{Sha3Accumulator, Hash};
+///
+/// let mut acc = Sha3Accumulator::new();
+/// let leaf = Hash::from_data(b"data");
+/// acc.add(leaf).unwrap();
+///
+/// let proof = acc.prove(&[0]).unwrap();
+/// acc.verify(&proof, &[leaf]).unwrap();
+/// ```
+///
+/// Batch proof:
+/// ```
+/// use merkle_tree_accumulator::{Sha3Accumulator, Hash};
+///
+/// let mut acc = Sha3Accumulator::new();
+/// (0..10).for_each(|i| {
+///     acc.add(Hash::from_data(format!("data{i}").as_bytes())).unwrap();
+/// });
+///
+/// let proof = acc.prove(&[0, 3, 7]).unwrap();
+/// let leaves = vec![
+///     Hash::from_data(b"data0"),
+///     Hash::from_data(b"data3"),
+///     Hash::from_data(b"data7"),
+/// ];
+/// acc.verify(&proof, &leaves).unwrap();
+/// ```
 #[derive(Clone, Debug, Serialize, Deserialize)]
-pub struct AccumulatorProof {
-    /// Index of the leaf in the tree.
-    pub leaf_index: u64,
-    /// Proof hashes (sibling hashes along the path to root).
+pub struct Proof {
+    /// Indices of leaves being proven.
+    pub indices: Vec<u64>,
+    /// Proof hashes (sibling hashes, shared across all leaves).
     pub hashes: Vec<Hash>,
     /// Height of the accumulator when this proof was generated.
     pub height: u64,
 }
 
-impl AccumulatorProof {
+impl Proof {
     /// Serializes the proof to bytes using bincode.
     ///
     /// # Errors
@@ -532,7 +512,7 @@ impl AccumulatorProof {
     /// Returns `Error::Serialization` if serialization fails.
     #[cfg(feature = "std")]
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        bincode::serialize(self).map_err(Into::into)
+        bincode::serde::encode_to_vec(self, bincode::config::standard()).map_err(Into::into)
     }
 
     /// Deserializes a proof from bytes.
@@ -542,24 +522,76 @@ impl AccumulatorProof {
     /// Returns `Error::Serialization` if deserialization fails.
     #[cfg(feature = "std")]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        bincode::deserialize(bytes).map_err(Into::into)
+        let (proof, _): (Self, _) =
+            bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
+        Ok(proof)
     }
 }
+
+/// Type alias for a Merkle tree accumulator using SHA3-256 hash function.
+///
+/// This is the default and recommended hasher for general-purpose applications.
+///
+/// # Examples
+///
+/// ```
+/// use merkle_tree_accumulator::{Hash, Sha3Accumulator};
+///
+/// let mut acc = Sha3Accumulator::new();
+/// acc.add(Hash::from_data(b"data")).unwrap();
+/// ```
+pub type Sha3Accumulator = MerkleTreeAccumulator<crate::hash::Sha3Hasher>;
+
+/// Type alias for a Merkle tree accumulator using Poseidon hash function.
+///
+/// Poseidon is an algebraic hash function over prime fields, designed for
+/// arithmetic circuits. It can be faster than traditional hash functions in
+/// certain cryptographic applications.
+///
+/// # Performance
+///
+/// - **Native execution**: Slower than SHA3-256 for general use
+/// - **Arithmetic circuits**: More efficient than traditional hash functions
+/// - **Use case**: When hash operations need to be performed in prime field arithmetic
+///
+/// # Examples
+///
+/// ```ignore
+/// # #[cfg(feature = "poseidon")]
+/// # {
+/// use merkle_tree_accumulator::{Hash, PoseidonAccumulator};
+///
+/// let mut acc = PoseidonAccumulator::new();
+/// acc.add(Hash::from_data(b"data")).unwrap();
+/// # }
+/// ```
+///
+/// # Feature Flag
+///
+/// Requires the `poseidon` feature:
+/// ```toml
+/// merkle-tree-accumulator = { version = "0.3", features = ["poseidon"] }
+/// ```
+#[cfg(feature = "poseidon")]
+pub type PoseidonAccumulator = MerkleTreeAccumulator<crate::hash::PoseidonHasher>;
 
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::hash::Sha3Hasher;
+
+    type TestAccumulator = MerkleTreeAccumulator<Sha3Hasher>;
 
     #[test]
     fn new_accumulator() {
-        let acc = MerkleTreeAccumulator::new();
+        let acc = Sha3Accumulator::new();
         assert_eq!(acc.height(), 0);
         assert!(acc.root().is_err());
     }
 
     #[test]
     fn add_single_leaf() {
-        let mut acc = MerkleTreeAccumulator::new();
+        let mut acc = Sha3Accumulator::new();
         let leaf = Hash::from_data(b"test");
 
         acc.add(leaf).unwrap();
@@ -570,7 +602,7 @@ mod tests {
 
     #[test]
     fn add_multiple_leaves() {
-        let mut acc = MerkleTreeAccumulator::new();
+        let mut acc = Sha3Accumulator::new();
 
         (0..10).for_each(|i| {
             let data = format!("leaf{i}");
@@ -583,76 +615,56 @@ mod tests {
 
     #[test]
     fn generate_proof() {
-        let mut acc = MerkleTreeAccumulator::new();
+        let mut acc = Sha3Accumulator::new();
         let leaf1 = Hash::from_data(b"leaf1");
         let leaf2 = Hash::from_data(b"leaf2");
 
         acc.add(leaf1).unwrap();
         acc.add(leaf2).unwrap();
 
-        let proof = acc.proof(0).unwrap();
-        assert_eq!(proof.leaf_index, 0);
+        let proof = acc.prove(&[0]).unwrap();
+        assert_eq!(proof.indices[0], 0);
         assert_eq!(proof.height, 2);
     }
 
     #[test]
-    fn generate_proof_batch() {
-        let mut acc = MerkleTreeAccumulator::new();
-        (0..5).for_each(|i| {
-            let data = format!("leaf{i}");
-            acc.add(Hash::from_data(data.as_bytes())).unwrap();
-        });
-
-        let proofs = acc.proof_batch(&[0, 2, 4]).unwrap();
-        assert_eq!(proofs.len(), 3);
-        assert_eq!(proofs[0].leaf_index, 0);
-        assert_eq!(proofs[1].leaf_index, 2);
-        assert_eq!(proofs[2].leaf_index, 4);
-        assert_eq!(proofs[0].height, 5);
-    }
-
-    #[test]
-    fn proof_out_of_bounds() {
-        let mut acc = MerkleTreeAccumulator::new();
+    fn prove_out_of_bounds() {
+        let mut acc = Sha3Accumulator::new();
         acc.add(Hash::from_data(b"leaf")).unwrap();
 
-        assert!(acc.proof(10).is_err());
-    }
+        // Single index out of bounds
+        assert!(acc.prove(&[10]).is_err());
 
-    #[test]
-    fn batch_proof_out_of_bounds() {
-        let mut acc = MerkleTreeAccumulator::new();
-        acc.add(Hash::from_data(b"leaf")).unwrap();
-
-        assert!(acc.proof_batch(&[0, 10]).is_err());
+        // Batch with one valid and one invalid index
+        assert!(acc.prove(&[0, 10]).is_err());
     }
 
     #[test]
     fn verify_valid_proof() {
-        let mut acc = MerkleTreeAccumulator::new();
+        let mut acc = Sha3Accumulator::new();
         let leaf = Hash::from_data(b"test");
 
         acc.add(leaf).unwrap();
-        let proof = acc.proof(0).unwrap();
+        let proof = acc.prove(&[0]).unwrap();
 
-        assert!(acc.verify(&proof, &leaf).is_ok());
+        assert!(acc.verify(&proof, &[leaf]).is_ok());
     }
 
     #[test]
     fn verify_invalid_leaf() {
-        let mut acc = MerkleTreeAccumulator::new();
+        let mut acc = Sha3Accumulator::new();
         let leaf = Hash::from_data(b"test");
         let wrong_leaf = Hash::from_data(b"wrong");
 
         acc.add(leaf).unwrap();
-        let proof = acc.proof(0).unwrap();
+        let proof = acc.prove(&[0]).unwrap();
 
-        assert!(acc.verify(&proof, &wrong_leaf).is_err());
+        assert!(acc.verify(&proof, &[wrong_leaf]).is_err());
     }
 
     #[test]
-    fn verify_batch() {
-        let mut acc = MerkleTreeAccumulator::new();
+    fn verify_batch_proofs() {
+        let mut acc = Sha3Accumulator::new();
         let leaves = (0..5)
             .map(|i| Hash::from_data(format!("leaf{i}").as_bytes()))
             .collect::<Vec<Hash>>();
@@ -661,51 +673,30 @@ mod tests {
             acc.add(leaf).unwrap();
         });
 
-        let proofs = acc.proof_batch(&[0, 2, 4]).unwrap();
+        // Valid batch proof
+        let proof = acc.prove(&[0, 2, 4]).unwrap();
         let batch_leaves = vec![leaves[0], leaves[2], leaves[4]];
+        assert!(acc.verify(&proof, &batch_leaves).is_ok());
 
-        assert!(acc.verify_batch(&proofs, &batch_leaves).is_ok());
-    }
+        // Invalid: wrong leaf in batch
+        let wrong_leaves = vec![leaves[0], Hash::from_data(b"wrong"), leaves[4]];
+        assert!(acc.verify(&proof, &wrong_leaves).is_err());
 
-    #[test]
-    fn verify_batch_invalid() {
-        let mut acc = MerkleTreeAccumulator::new();
-        let leaves = (0..5)
-            .map(|i| Hash::from_data(format!("leaf{i}").as_bytes()))
-            .collect::<Vec<Hash>>();
-
-        leaves.iter().for_each(|&leaf| {
-            acc.add(leaf).unwrap();
-        });
-
-        let proofs = acc.proof_batch(&[0, 2]).unwrap();
-        let wrong_leaves = vec![leaves[0], Hash::from_data(b"wrong")];
-
-        assert!(acc.verify_batch(&proofs, &wrong_leaves).is_err());
-    }
-
-    #[test]
-    fn verify_batch_length_mismatch() {
-        let mut acc = MerkleTreeAccumulator::new();
-        acc.add(Hash::from_data(b"leaf1")).unwrap();
-        acc.add(Hash::from_data(b"leaf2")).unwrap();
-
-        let proofs = acc.proof_batch(&[0, 1]).unwrap();
-        let leaves = vec![Hash::from_data(b"leaf1")]; // Only one leaf
-
-        assert!(acc.verify_batch(&proofs, &leaves).is_err());
+        // Invalid: leaf count mismatch
+        let too_few_leaves = vec![leaves[0]];
+        assert!(acc.verify(&proof, &too_few_leaves).is_err());
     }
 
     #[test]
     fn newer_witness_allowed() {
-        let mut acc = MerkleTreeAccumulator::new();
+        let mut acc = Sha3Accumulator::new();
         acc.set_newer_witness_allowed(true);
 
         let leaf = Hash::from_data(b"leaf");
         acc.add(leaf).unwrap();
 
         // Clear cache to simulate old witness
-        let mut new_acc = MerkleTreeAccumulator::new();
+        let mut new_acc = TestAccumulator::new();
         new_acc.set_newer_witness_allowed(true);
         new_acc.add(leaf).unwrap();
     }
@@ -713,12 +704,12 @@ mod tests {
     #[test]
     #[cfg(feature = "std")]
     fn accumulator_serialization() {
-        let mut acc = MerkleTreeAccumulator::new();
+        let mut acc = Sha3Accumulator::new();
         acc.add(Hash::from_data(b"leaf1")).unwrap();
         acc.add(Hash::from_data(b"leaf2")).unwrap();
 
         let bytes = acc.to_bytes().unwrap();
-        let deserialized = MerkleTreeAccumulator::from_bytes(&bytes).unwrap();
+        let deserialized = TestAccumulator::from_bytes(&bytes).unwrap();
 
         assert_eq!(acc.height(), deserialized.height());
         assert_eq!(
@@ -730,15 +721,107 @@ mod tests {
     #[test]
     #[cfg(feature = "std")]
     fn proof_serialization() {
-        let mut acc = MerkleTreeAccumulator::new();
-        acc.add(Hash::from_data(b"leaf1")).unwrap();
-        acc.add(Hash::from_data(b"leaf2")).unwrap();
+        let mut acc = Sha3Accumulator::new();
+        (0..8).for_each(|i| {
+            let data = format!("leaf{i}");
+            acc.add(Hash::from_data(data.as_bytes())).unwrap();
+        });
 
-        let proof = acc.proof(0).unwrap();
-        let bytes = proof.to_bytes().unwrap();
-        let deserialized = AccumulatorProof::from_bytes(&bytes).unwrap();
+        // single proof serialization
+        let single_proof = acc.prove(&[0]).unwrap();
+        let bytes = single_proof.to_bytes().unwrap();
+        let deserialized = Proof::from_bytes(&bytes).unwrap();
+        assert_eq!(single_proof.indices, deserialized.indices);
+        assert_eq!(single_proof.height, deserialized.height);
+        assert_eq!(single_proof.hashes.len(), deserialized.hashes.len());
 
-        assert_eq!(proof.leaf_index, deserialized.leaf_index);
-        assert_eq!(proof.height, deserialized.height);
+        // batch proof serialization
+        let batch_proof = acc.prove(&[0, 3, 5]).unwrap();
+        let bytes = batch_proof.to_bytes().unwrap();
+        let deserialized = Proof::from_bytes(&bytes).unwrap();
+        assert_eq!(batch_proof.indices, deserialized.indices);
+        assert_eq!(batch_proof.height, deserialized.height);
+        assert_eq!(batch_proof.hashes.len(), deserialized.hashes.len());
+    }
+
+    #[test]
+    fn batch_proof_storage_efficiency() {
+        let mut acc = Sha3Accumulator::new();
+        (0..16).for_each(|i| {
+            let data = format!("data{i}");
+            acc.add(Hash::from_data(data.as_bytes())).unwrap();
+        });
+
+        let indices = [0, 4, 8, 12];
+        let individual_proofs = indices
+            .iter()
+            .map(|&i| acc.prove(&[i]).unwrap())
+            .collect::<Vec<Proof>>();
+        let batch_proof = acc.prove(&indices).unwrap();
+
+        let individual_hash_count = individual_proofs
+            .iter()
+            .map(|p| p.hashes.len())
+            .sum::<usize>();
+
+        // Batch proof should have fewer hashes (shared sibling hashes)
+        assert!(
+            batch_proof.hashes.len() < individual_hash_count,
+            "Proof ({}) should be more compact than individual proofs ({})",
+            batch_proof.hashes.len(),
+            individual_hash_count
+        );
+    }
+
+    #[test]
+    fn prove_empty_tree() {
+        let acc = Sha3Accumulator::new();
+        assert!(acc.prove(&[0]).is_err());
+    }
+
+    #[test]
+    #[cfg(feature = "poseidon")]
+    fn poseidon_hasher_works() {
+        use crate::hash::PoseidonHasher;
+
+        type PoseidonAcc = MerkleTreeAccumulator<PoseidonHasher>;
+
+        let mut poseidon_acc = PoseidonAcc::new();
+        let mut sha3_acc = TestAccumulator::new();
+
+        let leaf1 = Hash::from_data(b"data1");
+        let leaf2 = Hash::from_data(b"data2");
+
+        poseidon_acc.add(leaf1).unwrap();
+        poseidon_acc.add(leaf2).unwrap();
+        sha3_acc.add(leaf1).unwrap();
+        sha3_acc.add(leaf2).unwrap();
+
+        assert_eq!(poseidon_acc.height(), 2);
+        assert_eq!(sha3_acc.height(), 2);
+
+        // Roots should be different because different hash functions
+        assert_ne!(poseidon_acc.root().unwrap(), sha3_acc.root().unwrap());
+
+        // Proofs should work with Poseidon hasher
+        let proof = poseidon_acc.prove(&[0]).unwrap();
+        assert!(poseidon_acc.verify(&proof, &[leaf1]).is_ok());
+
+        // Batch proofs should work with Poseidon hasher
+        let leaf3 = Hash::from_data(b"data3");
+        let leaf4 = Hash::from_data(b"data4");
+        let leaf5 = Hash::from_data(b"data5");
+        let leaf6 = Hash::from_data(b"data6");
+        let leaf7 = Hash::from_data(b"data7");
+
+        poseidon_acc.add(leaf3).unwrap();
+        poseidon_acc.add(leaf4).unwrap();
+        poseidon_acc.add(leaf5).unwrap();
+        poseidon_acc.add(leaf6).unwrap();
+        poseidon_acc.add(leaf7).unwrap();
+
+        let batch_proof = poseidon_acc.prove(&[0, 3, 5]).unwrap();
+        let leaves = vec![leaf1, leaf4, leaf6];
+        assert!(poseidon_acc.verify(&batch_proof, &leaves).is_ok());
     }
 }
