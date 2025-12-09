@@ -7,6 +7,7 @@
 //! - **Witness caching**: LRU cache for efficient verification of old proofs
 //! - **Chain-agnostic**: No blockchain-specific dependencies
 //! - **Batch operations**: Optimized batch proof generation and verification
+//! - **no-std/WASM compatible**: Works in constrained environments without standard library
 //!
 //! # Examples
 //!
@@ -22,6 +23,7 @@
 //! # Features
 //!
 //! - `std` (default): Enable standard library support
+//! - `poseidon`: Enable Poseidon hasher for algebraic hash operations
 
 #![cfg_attr(not(feature = "std"), no_std)]
 #![deny(

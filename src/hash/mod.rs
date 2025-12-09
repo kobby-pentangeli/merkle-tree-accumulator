@@ -3,16 +3,27 @@
 //! This module provides a fixed-size hash type and integration with the `RustCrypto`
 //! `digest` trait ecosystem. The default hash function is SHA3-256.
 //!
-//! It also provides the [`Sha3Hasher`] type which implements the `rs_merkle::Hasher`
-//! trait, allowing SHA3-256 to be used with the `rs-merkle` library.
+//! # Hasher Implementations
+//!
+//! - [`Sha3Hasher`]: SHA3-256 hasher (default, general-purpose)
+//! - [`PoseidonHasher`]: Poseidon hasher (algebraic hash for arithmetic circuits)
 
+use alloc::format;
+use alloc::string::String;
 use core::fmt;
 
 use digest::Digest;
-use rs_merkle::Hasher;
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
+
+mod sha3_hasher;
+pub use sha3_hasher::Sha3Hasher;
+
+#[cfg(feature = "poseidon")]
+mod poseidon;
+#[cfg(feature = "poseidon")]
+pub use poseidon::PoseidonHasher;
 
 /// A 256-bit (32-byte) cryptographic hash.
 ///
@@ -262,150 +273,6 @@ impl fmt::UpperHex for Hash {
     }
 }
 
-/// SHA3-256 hasher for `rs-merkle` compatibility.
-///
-/// This hasher implements the `rs_merkle::Hasher` trait using SHA3-256
-/// as the underlying hash function. It serves as the default hash function
-/// for the Merkle tree accumulator.
-///
-/// # Examples
-///
-/// ```
-/// # use merkle_tree_accumulator::hash::Sha3Hasher;
-/// use rs_merkle::Hasher;
-///
-/// let data = b"hello world";
-/// let hash = Sha3Hasher::hash(data);
-/// assert_eq!(hash.len(), 32);
-/// ```
-#[derive(Clone, Copy, Debug)]
-pub struct Sha3Hasher;
-
-impl Hasher for Sha3Hasher {
-    type Hash = [u8; 32];
-
-    fn hash(data: &[u8]) -> Self::Hash {
-        let mut hasher = sha3::Sha3_256::new();
-        hasher.update(data);
-        hasher.finalize().into()
-    }
-
-    fn concat_and_hash(left: &Self::Hash, right: Option<&Self::Hash>) -> Self::Hash {
-        let mut hasher = sha3::Sha3_256::new();
-        hasher.update(left);
-        if let Some(right) = right {
-            hasher.update(right);
-        }
-        hasher.finalize().into()
-    }
-}
-
-/// Poseidon hasher implementation.
-///
-/// This hasher uses the Poseidon hash function, an algebraic hash function
-/// over prime fields. Poseidon is designed for arithmetic circuits and
-/// can be useful in cryptographic applications that require efficient
-/// hashing over field elements.
-///
-/// # Examples
-///
-/// ```ignore
-/// # #[cfg(feature = "poseidon")]
-/// # {
-/// use merkle_tree_accumulator::hash::PoseidonHasher;
-/// use rs_merkle::Hasher;
-///
-/// let data = b"hello world";
-/// let hash = PoseidonHasher::hash(data);
-/// assert_eq!(hash.len(), 32);
-/// # }
-/// ```
-///
-/// # Feature Flag
-///
-/// This hasher is only available with the `poseidon` feature enabled:
-/// ```toml
-/// merkle-tree-accumulator = { version = "0.3", features = ["poseidon"] }
-/// ```
-#[cfg(feature = "poseidon")]
-#[derive(Clone, Copy, Debug)]
-pub struct PoseidonHasher;
-
-#[cfg(feature = "poseidon")]
-impl Hasher for PoseidonHasher {
-    type Hash = [u8; 32];
-
-    fn hash(data: &[u8]) -> Self::Hash {
-        use blstrs::Scalar;
-        use ff::Field;
-        use generic_array::GenericArray;
-        use neptune::Poseidon;
-        use neptune::poseidon::PoseidonConstants;
-
-        // Create Poseidon hasher with arity 2 (binary tree)
-        let constants = PoseidonConstants::<Scalar, typenum::U2>::new();
-
-        let field_element = if data.len() <= 32 {
-            let mut padded = [0u8; 32];
-            padded[..data.len()].copy_from_slice(data);
-            bytes_to_scalar(&padded)
-        } else {
-            // For longer data, use SHA3 first then convert to scalar
-            let mut hasher = sha3::Sha3_256::new();
-            hasher.update(data);
-            let hash_bytes: [u8; 32] = hasher.finalize().into();
-            bytes_to_scalar(&hash_bytes)
-        };
-
-        let preimage = GenericArray::from([field_element, Scalar::ZERO]);
-        let hash_result = Poseidon::new_with_preimage(&preimage, &constants).hash();
-
-        scalar_to_bytes(&hash_result)
-    }
-
-    fn concat_and_hash(left: &Self::Hash, right: Option<&Self::Hash>) -> Self::Hash {
-        use blstrs::Scalar;
-        use ff::Field;
-        use generic_array::GenericArray;
-        use neptune::Poseidon;
-        use neptune::poseidon::PoseidonConstants;
-
-        let constants = PoseidonConstants::<Scalar, typenum::U2>::new();
-        let left_scalar = bytes_to_scalar(left);
-
-        let hash_result = right.map_or_else(
-            || {
-                let preimage = GenericArray::from([left_scalar, Scalar::ZERO]);
-                Poseidon::new_with_preimage(&preimage, &constants).hash()
-            },
-            |right| {
-                let right_scalar = bytes_to_scalar(right);
-                let preimage = GenericArray::from([left_scalar, right_scalar]);
-                Poseidon::new_with_preimage(&preimage, &constants).hash()
-            },
-        );
-
-        scalar_to_bytes(&hash_result)
-    }
-}
-
-/// Converts a 32-byte array to a BLS12-381 scalar field element.
-#[cfg(feature = "poseidon")]
-fn bytes_to_scalar(bytes: &[u8; 32]) -> blstrs::Scalar {
-    use ff::{Field, PrimeField};
-    // Take first 31 bytes to ensure we're within field modulus
-    let mut repr = [0u8; 32];
-    repr[..31].copy_from_slice(&bytes[..31]);
-    blstrs::Scalar::from_repr(repr).unwrap_or(blstrs::Scalar::ZERO)
-}
-
-/// Converts a BLS12-381 scalar field element to a 32-byte array.
-#[cfg(feature = "poseidon")]
-fn scalar_to_bytes(scalar: &blstrs::Scalar) -> [u8; 32] {
-    use ff::PrimeField;
-    scalar.to_repr()
-}
-
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -470,65 +337,5 @@ mod tests {
         let (deserialized, _): (Hash, _) =
             bincode::serde::decode_from_slice(&serialized, bincode::config::standard()).unwrap();
         assert_eq!(hash, deserialized);
-    }
-
-    #[test]
-    fn sha3_hasher_hash() {
-        let data = b"test data";
-        let hash1 = Sha3Hasher::hash(data);
-        let hash2 = Sha3Hasher::hash(data);
-        assert_eq!(hash1, hash2);
-        assert_eq!(hash1.len(), 32);
-    }
-
-    #[test]
-    fn sha3_hasher_concat_and_hash() {
-        let left = [1u8; 32];
-        let right = [2u8; 32];
-        let hash1 = Sha3Hasher::concat_and_hash(&left, Some(&right));
-        let hash2 = Sha3Hasher::concat_and_hash(&left, Some(&right));
-        assert_eq!(hash1, hash2);
-        assert_ne!(hash1, left);
-        assert_ne!(hash1, right);
-    }
-
-    #[test]
-    fn sha3_hasher_concat_single() {
-        let left = [1u8; 32];
-        let hash1 = Sha3Hasher::concat_and_hash(&left, None);
-        let hash2 = Sha3Hasher::concat_and_hash(&left, None);
-        assert_eq!(hash1, hash2);
-    }
-
-    #[test]
-    #[cfg(feature = "poseidon")]
-    fn poseidon_hasher_works() {
-        use crate::hash::PoseidonHasher;
-
-        let data = b"test data";
-        let left = [1u8; 32];
-        let right = [2u8; 32];
-
-        let hash1 = PoseidonHasher::hash(data);
-        let hash2 = PoseidonHasher::hash(data);
-        assert_eq!(hash1, hash2);
-        assert_eq!(hash1.len(), 32);
-
-        // Concat and hash should work with two inputs
-        let concat_hash1 = PoseidonHasher::concat_and_hash(&left, Some(&right));
-        let concat_hash2 = PoseidonHasher::concat_and_hash(&left, Some(&right));
-        assert_eq!(concat_hash1, concat_hash2);
-        assert_ne!(concat_hash1, left);
-        assert_ne!(concat_hash1, right);
-
-        // Concat and hash should work with single input
-        let single_hash1 = PoseidonHasher::concat_and_hash(&left, None);
-        let single_hash2 = PoseidonHasher::concat_and_hash(&left, None);
-        assert_eq!(single_hash1, single_hash2);
-
-        // Poseidon and SHA3 should produce different outputs
-        let poseidon_hash = PoseidonHasher::hash(data);
-        let sha3_hash = Sha3Hasher::hash(data);
-        assert_ne!(poseidon_hash, sha3_hash);
     }
 }

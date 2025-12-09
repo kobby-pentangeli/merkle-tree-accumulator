@@ -1,5 +1,8 @@
 //! Error types for Merkle tree accumulator operations.
 
+use alloc::format;
+use alloc::string::String;
+
 /// Errors that can occur during Merkle tree accumulator operations.
 #[derive(Clone, Debug, Eq, thiserror::Error, PartialEq)]
 pub enum Error {

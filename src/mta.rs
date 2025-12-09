@@ -1,5 +1,6 @@
 //! Merkle Tree Accumulator implementation.
 
+use alloc::format;
 use alloc::vec::Vec;
 use core::num::NonZeroUsize;
 
