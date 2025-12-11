@@ -10,8 +10,7 @@ A simple, append-only Merkle tree-based cryptographic accumulator.
 ## Features
 
 - ✅ **Multiple hashers**: Support for SHA-3, BLAKE3, and Poseidon hash functions
-- ✅ **Height tracking**: Accumulator maintains height for historical verification
-- ✅ **Witness caching**: LRU cache for efficient verification of old proofs
+- ✅ **Height tracking**: Accumulator maintains height for proof verification
 - ✅ **Chain-agnostic**: No blockchain-specific dependencies
 - ✅ **Batch operations**: Optimized batch proof generation and verification
 - ✅ **no-std/WASM compatible**: Works in constrained environments

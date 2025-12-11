@@ -2,18 +2,13 @@
 
 use alloc::format;
 use alloc::vec::Vec;
-use core::num::NonZeroUsize;
 
-use lru::LruCache;
 use rs_merkle::{Hasher, MerkleProof, MerkleTree};
 use serde::{Deserialize, Serialize};
 
 use crate::{Error, Hash, Result};
 
-/// Default cache size for witness caching.
-const DEFAULT_CACHE_SIZE: usize = 1000;
-
-/// A Merkle tree accumulator with append-only semantics and witness caching.
+/// A Merkle tree accumulator with append-only semantics.
 ///
 /// The accumulator is generic over the hash function, allowing you to choose
 /// between different hashers like SHA3-256 (default) or Poseidon (algebraic hash).
@@ -48,10 +43,6 @@ pub struct MerkleTreeAccumulator<H: Hasher<Hash = [u8; 32]>> {
     height: u64,
     /// Leaves that have been added to the accumulator.
     leaves: Vec<[u8; 32]>,
-    /// LRU cache for recent witnesses (leaf hashes).
-    cache: LruCache<Hash, ()>,
-    /// Whether newer witnesses are allowed for verification.
-    newer_witness_allowed: bool,
 }
 
 impl<H: Hasher<Hash = [u8; 32]>> Default for MerkleTreeAccumulator<H> {
@@ -65,13 +56,12 @@ impl<H: Hasher<Hash = [u8; 32]>> core::fmt::Debug for MerkleTreeAccumulator<H> {
         f.debug_struct("MerkleTreeAccumulator")
             .field("height", &self.height)
             .field("leaves_count", &self.leaves.len())
-            .field("newer_witness_allowed", &self.newer_witness_allowed)
             .finish_non_exhaustive()
     }
 }
 
 impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
-    /// Creates a new empty accumulator with default cache size.
+    /// Creates a new empty accumulator.
     ///
     /// # Examples
     ///
@@ -83,37 +73,10 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
     /// ```
     #[must_use]
     pub fn new() -> Self {
-        Self::with_cache_size(DEFAULT_CACHE_SIZE)
-    }
-
-    /// Creates a new empty accumulator with the specified cache size.
-    ///
-    /// # Panics
-    ///
-    /// Panics if `cache_size` is 0 and `NonZeroUsize::new` fails. In practice,
-    /// this is handled by using a minimum cache size of 1.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use merkle_tree_accumulator::Sha3Accumulator;
-    ///
-    /// let acc = Sha3Accumulator::with_cache_size(500);
-    /// assert_eq!(acc.height(), 0);
-    /// ```
-    #[must_use]
-    pub fn with_cache_size(cache_size: usize) -> Self {
-        let cache_size = cache_size.max(1);
-        let cache = LruCache::new(
-            NonZeroUsize::new(cache_size).expect("cache size is guaranteed to be >= 1"),
-        );
-
         Self {
             tree: MerkleTree::new(),
             height: 0,
             leaves: Vec::new(),
-            cache,
-            newer_witness_allowed: false,
         }
     }
 
@@ -176,10 +139,6 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
     /// assert_eq!(acc.height(), 1);
     /// ```
     pub fn add(&mut self, leaf: Hash) -> Result<()> {
-        // Add to cache
-        self.cache.put(leaf, ());
-
-        // Add to leaves and rebuild tree
         self.leaves.push(leaf.into_bytes());
         self.tree = MerkleTree::from_leaves(&self.leaves);
         self.height += 1;
@@ -320,18 +279,6 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
             return Err(Error::EmptyTree);
         }
 
-        if !self.newer_witness_allowed && proof.height < self.height {
-            leaves.iter().try_for_each(|leaf| {
-                if self.cache.contains(leaf) {
-                    Ok(())
-                } else {
-                    Err(Error::InvalidWitness {
-                        height: proof.height,
-                    })
-                }
-            })?;
-        }
-
         let root = self.root()?;
         let proof_hashes = proof
             .hashes
@@ -364,40 +311,6 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
         }
     }
 
-    /// Sets whether newer witnesses are allowed for verification.
-    ///
-    /// When set to `true`, proofs generated at a newer height than when
-    /// a leaf was added can still be verified.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use merkle_tree_accumulator::Sha3Accumulator;
-    ///
-    /// let mut acc = Sha3Accumulator::new();
-    /// acc.set_newer_witness_allowed(true);
-    /// ```
-    pub const fn set_newer_witness_allowed(&mut self, allowed: bool) {
-        self.newer_witness_allowed = allowed;
-    }
-
-    /// Checks if a leaf hash is in the cache.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// use merkle_tree_accumulator::{Sha3Accumulator, Hash};
-    ///
-    /// let mut acc = Sha3Accumulator::new();
-    /// let leaf = Hash::from_data(b"data");
-    /// acc.add(leaf).unwrap();
-    /// assert!(acc.contains_in_cache(&leaf));
-    /// ```
-    #[must_use]
-    pub fn contains_in_cache(&self, leaf: &Hash) -> bool {
-        self.cache.contains(leaf)
-    }
-
     /// Serializes the accumulator to bytes using bincode.
     ///
     /// Note: The internal rs-merkle tree is reconstructed from leaves,
@@ -411,7 +324,6 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
         let data = Accumulator {
             height: self.height,
             leaves: self.leaves.clone(),
-            newer_witness_allowed: self.newer_witness_allowed,
         };
         bincode::serde::encode_to_vec(&data, bincode::config::standard()).map_err(Into::into)
     }
@@ -421,10 +333,6 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
     /// # Errors
     ///
     /// Returns `Error::Serialization` if deserialization fails.
-    ///
-    /// # Panics
-    ///
-    /// Should not panic as `DEFAULT_CACHE_SIZE` is a non-zero constant.
     #[cfg(feature = "std")]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let (data, _): (Accumulator, _) =
@@ -435,10 +343,6 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
             tree,
             height: data.height,
             leaves: data.leaves,
-            cache: LruCache::new(
-                NonZeroUsize::new(DEFAULT_CACHE_SIZE).expect("DEFAULT_CACHE_SIZE is non-zero"),
-            ),
-            newer_witness_allowed: data.newer_witness_allowed,
         })
     }
 }
@@ -449,7 +353,6 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
 struct Accumulator {
     height: u64,
     leaves: Vec<[u8; 32]>,
-    newer_witness_allowed: bool,
 }
 
 /// A cryptographic proof that one or more leaves exist in the accumulator.
@@ -632,7 +535,6 @@ mod tests {
         acc.add(leaf).unwrap();
         assert_eq!(acc.height(), 1);
         assert!(acc.root().is_ok());
-        assert!(acc.contains_in_cache(&leaf));
     }
 
     #[test]
@@ -720,20 +622,6 @@ mod tests {
         // Invalid: leaf count mismatch
         let too_few_leaves = vec![leaves[0]];
         assert!(acc.verify(&proof, &too_few_leaves).is_err());
-    }
-
-    #[test]
-    fn newer_witness_allowed() {
-        let mut acc = Sha3Accumulator::new();
-        acc.set_newer_witness_allowed(true);
-
-        let leaf = Hash::from_data(b"leaf");
-        acc.add(leaf).unwrap();
-
-        // Clear cache to simulate old witness
-        let mut new_acc = TestAccumulator::new();
-        new_acc.set_newer_witness_allowed(true);
-        new_acc.add(leaf).unwrap();
     }
 
     #[test]

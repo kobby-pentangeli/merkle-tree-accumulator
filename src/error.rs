@@ -28,13 +28,6 @@ pub enum Error {
     #[error("Cannot operate on empty tree")]
     EmptyTree,
 
-    /// Invalid witness at the specified height.
-    #[error("Invalid witness at height {height}")]
-    InvalidWitness {
-        /// Height at which witness is invalid.
-        height: u64,
-    },
-
     /// Serialization or deserialization failed.
     #[error("Serialization error: {0}")]
     Serialization(String),
