@@ -1,8 +1,10 @@
 //! # Merkle Tree Accumulator
 //!
-//! This library provides a Merkle tree-based cryptographic accumulator with the following features:
+//! A simple, append-only Merkle tree-based cryptographic accumulator.
 //!
-//! - **Append-only semantics**: Elements can only be added, never removed
+//! # Features
+//!
+//! - **Multiple hashers**: Support for SHA-3, BLAKE3, and Poseidon hash functions
 //! - **Height tracking**: Accumulator maintains height for historical verification
 //! - **Witness caching**: LRU cache for efficient verification of old proofs
 //! - **Chain-agnostic**: No blockchain-specific dependencies
@@ -20,7 +22,7 @@
 //! let hash = Hash::from_data(data);
 //! ```
 //!
-//! # Features
+//! # Feature Flags
 //!
 //! - `std` (default): Enable standard library support
 //! - `blake3`: Enable BLAKE3 hasher for high-performance applications

@@ -1,7 +1,7 @@
 [package]
 name = "merkle-tree-accumulator"
 version = "0.3.0"
-description = "Simple Merkle tree accumulator"
+description = "A simple, append-only Merkle tree-based cryptographic accumulator"
 authors = ["Kobby Pentangeli <kobbypentangeli@gmail.com>"]
 repository = "https://github.com/kobby-pentangeli/merkle-tree-accumulator"
 license = "MIT"
