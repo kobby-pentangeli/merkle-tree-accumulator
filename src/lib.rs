@@ -28,27 +28,8 @@
 //! - `poseidon`: Enable Poseidon hasher for algebraic hash operations
 
 #![cfg_attr(not(feature = "std"), no_std)]
-#![deny(
-    missing_docs,
-    trivial_casts,
-    trivial_numeric_casts,
-    unsafe_code,
-    unstable_features,
-    unused_import_braces,
-    unused_qualifications
-)]
-#![warn(
-    clippy::all,
-    clippy::pedantic,
-    clippy::cargo,
-    clippy::nursery,
-    rust_2018_idioms
-)]
-#![allow(
-    clippy::module_name_repetitions,
-    clippy::must_use_candidate,
-    clippy::missing_errors_doc
-)]
+#![forbid(unsafe_code)]
+#![warn(missing_docs, clippy::all)]
 
 extern crate alloc;
 
@@ -62,11 +43,88 @@ pub use hash::Blake3H;
 #[cfg(feature = "poseidon")]
 pub use hash::PoseidonH;
 pub use hash::{Hash, Sha3H};
-#[cfg(feature = "blake3")]
-pub use mta::Blake3Accumulator;
-#[cfg(feature = "poseidon")]
-pub use mta::PoseidonAccumulator;
-pub use mta::{MerkleTreeAccumulator, Proof, Sha3Accumulator};
+pub use mta::{MerkleTreeAccumulator, Proof};
 
 /// Result type for accumulator operations.
 pub type Result<T> = core::result::Result<T, Error>;
+
+/// Type alias for a Merkle tree accumulator using SHA3-256 hash function.
+///
+/// This is the default and recommended hasher for general-purpose applications.
+///
+/// # Examples
+///
+/// ```
+/// use merkle_tree_accumulator::{Hash, Sha3Accumulator};
+///
+/// let mut acc = Sha3Accumulator::new();
+/// acc.add(Hash::from_data(b"data")).unwrap();
+/// ```
+pub type Sha3Accumulator = MerkleTreeAccumulator<crate::hash::Sha3H>;
+
+/// Type alias for a Merkle tree accumulator using BLAKE3 hash function.
+///
+/// BLAKE3 is a high-performance cryptographic hash function designed for modern
+/// hardware with SIMD instructions and multi-core processors. It's significantly
+/// faster than both SHA2 and SHA3 while maintaining strong security properties.
+///
+/// # Performance
+///
+/// - **Speed**: 15-17× faster than SHA3-256 on modern CPUs
+/// - **Parallelism**: Binary tree structure enables efficient multi-threading
+/// - **Native execution**: Best-in-class performance for high-throughput systems
+/// - **Use case**: Blockchains, distributed systems, high-performance applications
+///
+/// # Examples
+///
+/// ```
+/// # #[cfg(feature = "blake3")]
+/// # {
+/// use merkle_tree_accumulator::{Hash, Blake3Accumulator};
+///
+/// let mut acc = Blake3Accumulator::new();
+/// acc.add(Hash::from_data(b"data")).unwrap();
+/// # }
+/// ```
+///
+/// # Feature Flag
+///
+/// Requires the `blake3` feature:
+/// ```toml
+/// merkle-tree-accumulator = { version = "0.3", features = ["blake3"] }
+/// ```
+#[cfg(feature = "blake3")]
+pub type Blake3Accumulator = MerkleTreeAccumulator<crate::hash::Blake3H>;
+
+/// Type alias for a Merkle tree accumulator using Poseidon hash function.
+///
+/// Poseidon is an algebraic hash function over prime fields, designed for
+/// arithmetic circuits. It can be faster than traditional hash functions in
+/// certain cryptographic applications.
+///
+/// # Performance
+///
+/// - **Native execution**: Slower than SHA3-256 for general use
+/// - **Arithmetic circuits**: More efficient than traditional hash functions
+/// - **Use case**: When hash operations need to be performed in prime field arithmetic
+///
+/// # Examples
+///
+/// ```ignore
+/// # #[cfg(feature = "poseidon")]
+/// # {
+/// use merkle_tree_accumulator::{Hash, PoseidonAccumulator};
+///
+/// let mut acc = PoseidonAccumulator::new();
+/// acc.add(Hash::from_data(b"data")).unwrap();
+/// # }
+/// ```
+///
+/// # Feature Flag
+///
+/// Requires the `poseidon` feature:
+/// ```toml
+/// merkle-tree-accumulator = { version = "0.3", features = ["poseidon"] }
+/// ```
+#[cfg(feature = "poseidon")]
+pub type PoseidonAccumulator = MerkleTreeAccumulator<crate::hash::PoseidonH>;

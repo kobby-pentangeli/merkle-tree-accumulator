@@ -18,6 +18,16 @@ use serde::{Deserialize, Serialize};
 
 use crate::{Error, Result};
 
+/// Domain separation prefix for leaf nodes.
+///
+/// See [RFC 9162 §2.1](https://datatracker.ietf.org/doc/html/rfc9162#section-2.1).
+pub(crate) const LEAF_HASH_PREFIX: u8 = 0x00;
+
+/// Domain separation prefix for internal nodes.
+///
+/// See [RFC 9162 §2.1](https://datatracker.ietf.org/doc/html/rfc9162#section-2.1).
+pub(crate) const INTERNAL_HASH_PREFIX: u8 = 0x01;
+
 mod sha3_h;
 pub use sha3_h::Sha3H;
 
@@ -34,7 +44,7 @@ pub use poseidon_h::PoseidonH;
 /// A 256-bit (32-byte) cryptographic hash.
 ///
 /// This type represents the output of cryptographic hash functions like SHA3-256,
-/// Blake3, or other 256-bit hash functions. It is used throughout the library
+/// BLAKE3, or other 256-bit hash functions. It is used throughout the library
 /// for representing Merkle tree nodes, roots, and leaf values.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct Hash([u8; 32]);
@@ -227,7 +237,13 @@ impl Hash {
     #[inline]
     #[must_use]
     pub fn is_zero(&self) -> bool {
-        self.0.iter().all(|&b| b == 0)
+        // Constant-time comparison:
+        // We `OR` all bytes together; if any byte is non-zero, the result is non-zero.
+        let mut acc = 0u8;
+        for &b in &self.0 {
+            acc |= b;
+        }
+        acc == 0
     }
 }
 

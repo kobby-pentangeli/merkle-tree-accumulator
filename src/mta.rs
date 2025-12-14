@@ -194,6 +194,12 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
             return Err(Error::EmptyTree);
         }
 
+        if indices.is_empty() {
+            return Err(Error::Serialization(
+                "Cannot generate proof for empty indices".to_string(),
+            ));
+        }
+
         indices.iter().try_for_each(|&index| {
             if index >= self.height {
                 Err(Error::IndexOutOfBounds {
@@ -231,7 +237,7 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
     /// # Errors
     ///
     /// Returns an error if:
-    /// - The proof is invalid or if cache validation fails
+    /// - The proof is invalid
     /// - The number of leaves doesn't match the proof indices
     /// - The tree is empty
     ///
@@ -332,11 +338,23 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
     ///
     /// # Errors
     ///
-    /// Returns `Error::Serialization` if deserialization fails.
+    /// Returns `Error::Serialization` if deserialization fails or if the
+    /// serialized data is inconsistent (e.g., height doesn't match leaf count).
     #[cfg(feature = "std")]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let (data, _): (Accumulator, _) =
             bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
+
+        // Validate integrity: height must match the number of leaves
+        #[allow(clippy::cast_possible_truncation)]
+        let leaf_count = data.leaves.len() as u64;
+        if data.height != leaf_count {
+            return Err(Error::Serialization(format!(
+                "Integrity check failed: height ({}) does not match leaf count ({})",
+                data.height, leaf_count
+            )));
+        }
+
         let tree = MerkleTree::from_leaves(&data.leaves);
 
         Ok(Self {
@@ -432,90 +450,10 @@ impl Proof {
     }
 }
 
-/// Type alias for a Merkle tree accumulator using SHA3-256 hash function.
-///
-/// This is the default and recommended hasher for general-purpose applications.
-///
-/// # Examples
-///
-/// ```
-/// use merkle_tree_accumulator::{Hash, Sha3Accumulator};
-///
-/// let mut acc = Sha3Accumulator::new();
-/// acc.add(Hash::from_data(b"data")).unwrap();
-/// ```
-pub type Sha3Accumulator = MerkleTreeAccumulator<crate::hash::Sha3H>;
-
-/// Type alias for a Merkle tree accumulator using BLAKE3 hash function.
-///
-/// BLAKE3 is a high-performance cryptographic hash function designed for modern
-/// hardware with SIMD instructions and multi-core processors. It's significantly
-/// faster than both SHA2 and SHA3 while maintaining strong security properties.
-///
-/// # Performance
-///
-/// - **Speed**: 15-17× faster than SHA3-256 on modern CPUs
-/// - **Parallelism**: Binary tree structure enables efficient multi-threading
-/// - **Native execution**: Best-in-class performance for high-throughput systems
-/// - **Use case**: Blockchains, distributed systems, high-performance applications
-///
-/// # Examples
-///
-/// ```
-/// # #[cfg(feature = "blake3")]
-/// # {
-/// use merkle_tree_accumulator::{Hash, Blake3Accumulator};
-///
-/// let mut acc = Blake3Accumulator::new();
-/// acc.add(Hash::from_data(b"data")).unwrap();
-/// # }
-/// ```
-///
-/// # Feature Flag
-///
-/// Requires the `blake3` feature:
-/// ```toml
-/// merkle-tree-accumulator = { version = "0.3", features = ["blake3"] }
-/// ```
-#[cfg(feature = "blake3")]
-pub type Blake3Accumulator = MerkleTreeAccumulator<crate::hash::Blake3H>;
-
-/// Type alias for a Merkle tree accumulator using Poseidon hash function.
-///
-/// Poseidon is an algebraic hash function over prime fields, designed for
-/// arithmetic circuits. It can be faster than traditional hash functions in
-/// certain cryptographic applications.
-///
-/// # Performance
-///
-/// - **Native execution**: Slower than SHA3-256 for general use
-/// - **Arithmetic circuits**: More efficient than traditional hash functions
-/// - **Use case**: When hash operations need to be performed in prime field arithmetic
-///
-/// # Examples
-///
-/// ```ignore
-/// # #[cfg(feature = "poseidon")]
-/// # {
-/// use merkle_tree_accumulator::{Hash, PoseidonAccumulator};
-///
-/// let mut acc = PoseidonAccumulator::new();
-/// acc.add(Hash::from_data(b"data")).unwrap();
-/// # }
-/// ```
-///
-/// # Feature Flag
-///
-/// Requires the `poseidon` feature:
-/// ```toml
-/// merkle-tree-accumulator = { version = "0.3", features = ["poseidon"] }
-/// ```
-#[cfg(feature = "poseidon")]
-pub type PoseidonAccumulator = MerkleTreeAccumulator<crate::hash::PoseidonH>;
-
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::Sha3Accumulator;
     use crate::hash::Sha3H;
 
     type TestAccumulator = MerkleTreeAccumulator<Sha3H>;
@@ -793,5 +731,15 @@ mod tests {
         let batch_proof = poseidon_acc.prove(&[0, 3, 5]).unwrap();
         let leaves = vec![leaf1, leaf4, leaf6];
         assert!(poseidon_acc.verify(&batch_proof, &leaves).is_ok());
+    }
+
+    #[test]
+    fn prove_empty_indices() {
+        let mut acc = Sha3Accumulator::new();
+        acc.add(Hash::from_data(b"leaf")).unwrap();
+
+        // Empty indices should fail
+        let result = acc.prove(&[]);
+        assert!(result.is_err());
     }
 }

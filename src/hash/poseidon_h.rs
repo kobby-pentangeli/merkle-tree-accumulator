@@ -3,12 +3,21 @@
 use digest::Digest;
 use rs_merkle::Hasher;
 
+use super::{INTERNAL_HASH_PREFIX, LEAF_HASH_PREFIX};
+
 /// Poseidon hasher implementation.
 ///
 /// This hasher uses the Poseidon hash function, an algebraic hash function
 /// over prime fields. Poseidon is designed for arithmetic circuits and
 /// can be useful in cryptographic applications that require efficient
 /// hashing over field elements.
+///
+/// # Security
+///
+/// This implementation uses domain separation prefixes as specified in
+/// [RFC 9162 (Certificate Transparency)](https://datatracker.ietf.org/doc/html/rfc9162):
+/// - Leaf nodes are prefixed with `0x00`
+/// - Internal nodes are prefixed with `0x01`
 ///
 /// # Examples
 ///
@@ -43,8 +52,11 @@ impl Hasher for PoseidonH {
         use neptune::Poseidon;
         use neptune::poseidon::PoseidonConstants;
 
-        // Create Poseidon hasher with arity 2 (binary tree)
-        let constants = PoseidonConstants::<Scalar, typenum::U2>::new();
+        // Create Poseidon hasher with arity 4 for domain separation
+        // We use: [domain_tag, data_element, zero, zero]
+        let constants = PoseidonConstants::<Scalar, typenum::U4>::new();
+
+        let domain_tag = Scalar::from(u64::from(LEAF_HASH_PREFIX));
 
         let field_element = if data.len() <= 32 {
             let mut padded = [0u8; 32];
@@ -58,7 +70,7 @@ impl Hasher for PoseidonH {
             bytes_to_scalar(&hash_bytes)
         };
 
-        let preimage = GenericArray::from([field_element, Scalar::ZERO]);
+        let preimage = GenericArray::from([domain_tag, field_element, Scalar::ZERO, Scalar::ZERO]);
         let hash_result = Poseidon::new_with_preimage(&preimage, &constants).hash();
 
         scalar_to_bytes(&hash_result)
@@ -71,17 +83,23 @@ impl Hasher for PoseidonH {
         use neptune::Poseidon;
         use neptune::poseidon::PoseidonConstants;
 
-        let constants = PoseidonConstants::<Scalar, typenum::U2>::new();
+        // Create Poseidon hasher with arity 4 for domain separation
+        // We use: [domain_tag, left, right, zero]
+        let constants = PoseidonConstants::<Scalar, typenum::U4>::new();
+
+        let domain_tag = Scalar::from(u64::from(INTERNAL_HASH_PREFIX));
         let left_scalar = bytes_to_scalar(left);
 
         let hash_result = right.map_or_else(
             || {
-                let preimage = GenericArray::from([left_scalar, Scalar::ZERO]);
+                let preimage =
+                    GenericArray::from([domain_tag, left_scalar, Scalar::ZERO, Scalar::ZERO]);
                 Poseidon::new_with_preimage(&preimage, &constants).hash()
             },
             |right| {
                 let right_scalar = bytes_to_scalar(right);
-                let preimage = GenericArray::from([left_scalar, right_scalar]);
+                let preimage =
+                    GenericArray::from([domain_tag, left_scalar, right_scalar, Scalar::ZERO]);
                 Poseidon::new_with_preimage(&preimage, &constants).hash()
             },
         );
@@ -136,5 +154,25 @@ mod tests {
         let poseidon_hash = PoseidonH::hash(data);
         let sha3_hash = crate::hash::Sha3H::hash(data);
         assert_ne!(poseidon_hash, sha3_hash);
+    }
+
+    #[test]
+    fn domain_separation_prevents_collision() {
+        // Test that leaf hash and internal node hash are different.
+        let left = [0xaa; 32];
+        let right = [0xbb; 32];
+
+        let internal_hash = PoseidonH::concat_and_hash(&left, Some(&right));
+
+        let mut fake_leaf = [0u8; 64];
+        fake_leaf[..32].copy_from_slice(&left);
+        fake_leaf[32..].copy_from_slice(&right);
+        let fake_leaf_hash = PoseidonH::hash(&fake_leaf);
+
+        // These must be different due to domain separation
+        assert_ne!(
+            internal_hash, fake_leaf_hash,
+            "Domain separation failed: leaf and internal node hashes collided"
+        );
     }
 }

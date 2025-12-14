@@ -2,6 +2,8 @@
 
 use rs_merkle::Hasher;
 
+use super::{INTERNAL_HASH_PREFIX, LEAF_HASH_PREFIX};
+
 /// BLAKE3 hasher for high-performance applications.
 ///
 /// BLAKE3 is a cryptographic hash function that is significantly faster than
@@ -9,11 +11,12 @@ use rs_merkle::Hasher;
 /// multi-core processors. It's designed with a binary tree structure that
 /// supports practically unlimited parallelism.
 ///
-/// # Performance
+/// # Security
 ///
-/// - **Speed**: 15-17× faster than SHA3-256 on modern CPUs
-/// - **Parallelism**: Binary tree structure enables efficient multi-threading
-/// - **Use case**: High-throughput systems, blockchains, distributed systems
+/// This implementation uses domain separation prefixes as specified in
+/// [RFC 9162 (Certificate Transparency)](https://datatracker.ietf.org/doc/html/rfc9162):
+/// - Leaf nodes are prefixed with `0x00`
+/// - Internal nodes are prefixed with `0x01`
 ///
 /// # Examples
 ///
@@ -42,11 +45,15 @@ impl Hasher for Blake3H {
     type Hash = [u8; 32];
 
     fn hash(data: &[u8]) -> Self::Hash {
-        blake3::hash(data).into()
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&[LEAF_HASH_PREFIX]);
+        hasher.update(data);
+        *hasher.finalize().as_bytes()
     }
 
     fn concat_and_hash(left: &Self::Hash, right: Option<&Self::Hash>) -> Self::Hash {
         let mut hasher = blake3::Hasher::new();
+        hasher.update(&[INTERNAL_HASH_PREFIX]);
         hasher.update(left);
         if let Some(right) = right {
             hasher.update(right);
@@ -86,5 +93,25 @@ mod tests {
         let blake3_hash = Blake3H::hash(data);
         let sha3_hash = crate::hash::Sha3H::hash(data);
         assert_ne!(blake3_hash, sha3_hash);
+    }
+
+    #[test]
+    fn domain_separation_prevents_collision() {
+        // Test that leaf hash and internal node hash are different.
+        let left = [0xaa; 32];
+        let right = [0xbb; 32];
+
+        let internal_hash = Blake3H::concat_and_hash(&left, Some(&right));
+
+        let mut fake_leaf = [0u8; 64];
+        fake_leaf[..32].copy_from_slice(&left);
+        fake_leaf[32..].copy_from_slice(&right);
+        let fake_leaf_hash = Blake3H::hash(&fake_leaf);
+
+        // These must be different due to domain separation
+        assert_ne!(
+            internal_hash, fake_leaf_hash,
+            "Domain separation failed: leaf and internal node hashes collided"
+        );
     }
 }
