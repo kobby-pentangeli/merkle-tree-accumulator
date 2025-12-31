@@ -9,11 +9,11 @@ A simple, append-only Merkle tree-based cryptographic accumulator.
 
 ## Features
 
-- ✅ **Multiple hashers**: Support for SHA-3, BLAKE3, and Poseidon hash functions
-- ✅ **Height tracking**: Accumulator maintains height for proof verification
-- ✅ **Chain-agnostic**: No blockchain-specific dependencies
-- ✅ **Batch operations**: Optimized batch proof generation and verification
-- ✅ **no-std/WASM compatible**: Works in constrained environments
+- [x] **Multiple hashers**: Support for SHA-3, BLAKE3, and Poseidon hash functions
+- [x] **Height tracking**: Accumulator maintains height for proof verification
+- [x] **Chain-agnostic**: No blockchain-specific dependencies
+- [x] **Batch operations**: Optimized batch proof generation and verification
+- [x] **no-std/WASM compatible**: Works in constrained environments
 
 ## Quick Start
 
@@ -120,6 +120,8 @@ use merkle_tree_accumulator::{Hash, PoseidonAccumulator};
 let mut acc = PoseidonAccumulator::new();
 acc.add(Hash::from_data(b"zk-friendly data"))?;
 ```
+
+> **Note:** `Hash::from_data()` uses SHA3-256 to create leaf hashes. The accumulator's hasher (BLAKE3, Poseidon) is used for internal tree operations. This design allows consistent leaf creation across different tree types. For end-to-end usage of a specific hasher, use the `rs_merkle::Hasher` trait directly: `Hash::new(Blake3H::hash(data))`.
 
 ## Examples
 
