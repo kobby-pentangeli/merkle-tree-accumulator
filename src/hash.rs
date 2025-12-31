@@ -1,71 +1,151 @@
-//! Cryptographic hash types and operations for Merkle tree accumulators.
-//!
-//! This module provides a fixed-size hash type and integration with the `RustCrypto`
-//! `digest` trait ecosystem. The default hash function is SHA3-256.
-//!
-//! # Hasher Implementations
-//!
-//! - [`Sha3H`]: SHA3-256 hasher (default, general-purpose, standardized)
-//! - [`Blake3H`]: BLAKE3 hasher (high-performance for throughput-critical systems)
-//! - [`PoseidonH`]: Poseidon hasher (algebraic hash for arithmetic circuits)
+//! Cryptographic hash types and hasher implementations.
 
-use alloc::format;
-use alloc::string::String;
 use core::fmt;
 
 use digest::Digest;
+use rs_merkle::Hasher;
 use serde::{Deserialize, Serialize};
 
-use crate::{Error, Result};
+use crate::Result;
 
-/// Domain separation prefix for leaf nodes.
-///
-/// See [RFC 9162 §2.1](https://datatracker.ietf.org/doc/html/rfc9162#section-2.1).
-pub(crate) const LEAF_HASH_PREFIX: u8 = 0x00;
+const LEAF_HASH_PREFIX: u8 = 0x00;
+const INTERNAL_HASH_PREFIX: u8 = 0x01;
 
-/// Domain separation prefix for internal nodes.
-///
-/// See [RFC 9162 §2.1](https://datatracker.ietf.org/doc/html/rfc9162#section-2.1).
-pub(crate) const INTERNAL_HASH_PREFIX: u8 = 0x01;
+/// SHA3-256 hasher for Merkle tree operations.
+#[derive(Clone, Copy, Debug)]
+pub struct Sha3H;
 
-mod sha3_h;
-pub use sha3_h::Sha3H;
+impl Hasher for Sha3H {
+    type Hash = [u8; 32];
+
+    fn hash(data: &[u8]) -> Self::Hash {
+        let mut hasher = sha3::Sha3_256::new();
+        hasher.update([LEAF_HASH_PREFIX]);
+        hasher.update(data);
+        hasher.finalize().into()
+    }
+
+    fn concat_and_hash(left: &Self::Hash, right: Option<&Self::Hash>) -> Self::Hash {
+        let mut hasher = sha3::Sha3_256::new();
+        hasher.update([INTERNAL_HASH_PREFIX]);
+        hasher.update(left);
+        if let Some(right) = right {
+            hasher.update(right);
+        }
+        hasher.finalize().into()
+    }
+}
+
+/// BLAKE3 hasher for high-performance Merkle tree operations.
+#[cfg(feature = "blake3")]
+#[derive(Clone, Copy, Debug)]
+pub struct Blake3H;
 
 #[cfg(feature = "blake3")]
-mod blake3_h;
-#[cfg(feature = "blake3")]
-pub use blake3_h::Blake3H;
+impl Hasher for Blake3H {
+    type Hash = [u8; 32];
+
+    fn hash(data: &[u8]) -> Self::Hash {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&[LEAF_HASH_PREFIX]);
+        hasher.update(data);
+        *hasher.finalize().as_bytes()
+    }
+
+    fn concat_and_hash(left: &Self::Hash, right: Option<&Self::Hash>) -> Self::Hash {
+        let mut hasher = blake3::Hasher::new();
+        hasher.update(&[INTERNAL_HASH_PREFIX]);
+        hasher.update(left);
+        if let Some(right) = right {
+            hasher.update(right);
+        }
+        *hasher.finalize().as_bytes()
+    }
+}
+
+/// Poseidon hasher for Merkle tree operations in algebraic circuits.
+#[cfg(feature = "poseidon")]
+#[derive(Clone, Copy, Debug)]
+pub struct PoseidonH;
 
 #[cfg(feature = "poseidon")]
-mod poseidon_h;
+impl Hasher for PoseidonH {
+    type Hash = [u8; 32];
+
+    fn hash(data: &[u8]) -> Self::Hash {
+        use blstrs::Scalar;
+        use ff::Field;
+        use generic_array::GenericArray;
+        use neptune::Poseidon;
+        use neptune::poseidon::PoseidonConstants;
+
+        let constants = PoseidonConstants::<Scalar, typenum::U4>::new();
+        let domain_tag = Scalar::from(u64::from(LEAF_HASH_PREFIX));
+
+        let field_element = if data.len() <= 32 {
+            let mut padded = [0u8; 32];
+            padded[..data.len()].copy_from_slice(data);
+            poseidon_bytes_to_scalar(&padded)
+        } else {
+            let mut hasher = sha3::Sha3_256::new();
+            hasher.update(data);
+            let hash_bytes: [u8; 32] = hasher.finalize().into();
+            poseidon_bytes_to_scalar(&hash_bytes)
+        };
+
+        let preimage = GenericArray::from([domain_tag, field_element, Scalar::ZERO, Scalar::ZERO]);
+        let hash_result = Poseidon::new_with_preimage(&preimage, &constants).hash();
+        poseidon_scalar_to_bytes(&hash_result)
+    }
+
+    fn concat_and_hash(left: &Self::Hash, right: Option<&Self::Hash>) -> Self::Hash {
+        use blstrs::Scalar;
+        use ff::Field;
+        use generic_array::GenericArray;
+        use neptune::Poseidon;
+        use neptune::poseidon::PoseidonConstants;
+
+        let constants = PoseidonConstants::<Scalar, typenum::U4>::new();
+        let domain_tag = Scalar::from(u64::from(INTERNAL_HASH_PREFIX));
+        let left_scalar = poseidon_bytes_to_scalar(left);
+
+        let hash_result = right.map_or_else(
+            || {
+                let preimage =
+                    GenericArray::from([domain_tag, left_scalar, Scalar::ZERO, Scalar::ZERO]);
+                Poseidon::new_with_preimage(&preimage, &constants).hash()
+            },
+            |right| {
+                let right_scalar = poseidon_bytes_to_scalar(right);
+                let preimage =
+                    GenericArray::from([domain_tag, left_scalar, right_scalar, Scalar::ZERO]);
+                Poseidon::new_with_preimage(&preimage, &constants).hash()
+            },
+        );
+        poseidon_scalar_to_bytes(&hash_result)
+    }
+}
+
 #[cfg(feature = "poseidon")]
-pub use poseidon_h::PoseidonH;
+fn poseidon_bytes_to_scalar(bytes: &[u8; 32]) -> blstrs::Scalar {
+    use ff::{Field, PrimeField};
+    let mut repr = [0u8; 32];
+    repr[..31].copy_from_slice(&bytes[..31]);
+    blstrs::Scalar::from_repr(repr).unwrap_or(blstrs::Scalar::ZERO)
+}
+
+#[cfg(feature = "poseidon")]
+fn poseidon_scalar_to_bytes(scalar: &blstrs::Scalar) -> [u8; 32] {
+    use ff::PrimeField;
+    scalar.to_repr()
+}
 
 /// A 256-bit (32-byte) cryptographic hash.
-///
-/// This type represents the output of cryptographic hash functions like SHA3-256,
-/// BLAKE3, or other 256-bit hash functions. It is used throughout the library
-/// for representing Merkle tree nodes, roots, and leaf values.
 #[derive(Clone, Copy, Debug, Eq, Hash, Ord, PartialEq, PartialOrd, Serialize, Deserialize)]
 pub struct Hash([u8; 32]);
 
 impl Hash {
-    /// The size of a hash in bytes.
-    pub const SIZE: usize = 32;
-
-    /// The length of a hash expressed as a hexadecimal string
-    pub const HEX_LEN: usize = 64;
-
     /// Creates a new hash from a 32-byte array.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use merkle_tree_accumulator::hash::Hash;
-    ///
-    /// let bytes = [0u8; 32];
-    /// let hash = Hash::new(bytes);
-    /// ```
     #[inline]
     #[must_use]
     pub const fn new(bytes: [u8; 32]) -> Self {
@@ -73,172 +153,44 @@ impl Hash {
     }
 
     /// Creates a hash by hashing the given data with SHA3-256.
-    ///
-    /// This is the default hash function used by the accumulator.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use merkle_tree_accumulator::hash::Hash;
-    ///
-    /// let data = b"some data";
-    /// let hash = Hash::from_data(data);
-    /// ```
     #[must_use]
     pub fn from_data(data: &[u8]) -> Self {
         let mut hasher = sha3::Sha3_256::new();
         hasher.update(data);
-        let result = hasher.finalize();
-        Self(result.into())
+        Self(hasher.finalize().into())
     }
 
-    /// Creates a hash from a slice, returning an error if the slice is not exactly 32 bytes.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use merkle_tree_accumulator::hash::Hash;
-    ///
-    /// let bytes = &[0u8; 32][..];
-    /// let hash = Hash::from_slice(bytes).unwrap();
-    /// ```
+    /// Creates a hash from a slice, returning an error if not exactly 32 bytes.
     pub fn from_slice(slice: &[u8]) -> Result<Self> {
         let bytes: [u8; 32] = slice.try_into()?;
         Ok(Self(bytes))
     }
 
     /// Returns the hash as a byte slice.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use merkle_tree_accumulator::hash::Hash;
-    ///
-    /// let hash = Hash::new([0u8; 32]);
-    /// assert_eq!(hash.as_bytes().len(), 32);
-    /// ```
     #[inline]
     #[must_use]
     pub const fn as_bytes(&self) -> &[u8; 32] {
         &self.0
     }
 
-    /// Returns the hash as a mutable byte slice.
-    #[inline]
-    #[must_use]
-    pub const fn as_bytes_mut(&mut self) -> &mut [u8; 32] {
-        &mut self.0
-    }
-
     /// Converts the hash into a byte array.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use merkle_tree_accumulator::hash::Hash;
-    ///
-    /// let hash = Hash::new([1u8; 32]);
-    /// let bytes = hash.into_bytes();
-    /// assert_eq!(bytes[0], 1);
-    /// ```
     #[inline]
     #[must_use]
     pub const fn into_bytes(self) -> [u8; 32] {
         self.0
     }
 
-    /// Returns a hexadecimal string representation of the hash.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use merkle_tree_accumulator::hash::Hash;
-    ///
-    /// let hash = Hash::new([0xab; 32]);
-    /// let hex = hash.to_hex();
-    /// assert!(hex.starts_with("abab"));
-    /// ```
-    #[must_use]
-    pub fn to_hex(&self) -> String {
-        use core::fmt::Write;
-        self.0
-            .iter()
-            .fold(String::with_capacity(Self::HEX_LEN), |mut hex, b| {
-                let _ = write!(hex, "{b:02x}");
-                hex
-            })
-    }
-
-    /// Creates a hash from a hexadecimal string.
-    ///
-    /// # Errors
-    ///
-    /// Returns an error if the string is not valid hexadecimal or not exactly 64 characters.
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use merkle_tree_accumulator::hash::Hash;
-    ///
-    /// let hex = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
-    /// let hash = Hash::from_hex(hex).unwrap();
-    /// assert_eq!(hash.to_hex(), hex);
-    /// ```
-    pub fn from_hex(hex: &str) -> Result<Self> {
-        if hex.len() != Self::HEX_LEN {
-            return Err(Error::Serialization(format!(
-                "Invalid hex string length: expected {}, got {}",
-                Self::HEX_LEN,
-                hex.len()
-            )));
-        }
-
-        let mut bytes = [0u8; 32];
-        for (i, chunk) in hex.as_bytes().chunks(2).enumerate() {
-            let hex_byte = core::str::from_utf8(chunk)
-                .map_err(|e| Error::Serialization(format!("Invalid UTF-8 in hex string: {e}")))?;
-
-            bytes[i] = u8::from_str_radix(hex_byte, 16)
-                .map_err(|e| Error::Serialization(format!("Invalid hex digit: {e}")))?;
-        }
-
-        Ok(Self(bytes))
-    }
-
     /// Creates a zero hash (all bytes are 0).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use merkle_tree_accumulator::hash::Hash;
-    ///
-    /// let zero = Hash::zero();
-    /// assert_eq!(zero.as_bytes(), &[0u8; 32]);
-    /// ```
     #[inline]
     #[must_use]
     pub const fn zero() -> Self {
         Self([0u8; 32])
     }
 
-    /// Checks if this hash is zero (all bytes are 0).
-    ///
-    /// # Examples
-    ///
-    /// ```
-    /// # use merkle_tree_accumulator::hash::Hash;
-    ///
-    /// let hash = Hash::zero();
-    /// assert!(hash.is_zero());
-    ///
-    /// let hash = Hash::from_data(b"data");
-    /// assert!(!hash.is_zero());
-    /// ```
+    /// Checks if this hash is zero (all bytes are 0) in constant time.
     #[inline]
     #[must_use]
     pub fn is_zero(&self) -> bool {
-        // Constant-time comparison:
-        // We `OR` all bytes together; if any byte is non-zero, the result is non-zero.
         let mut acc = 0u8;
         for &b in &self.0 {
             acc |= b;
@@ -259,12 +211,6 @@ impl AsRef<[u8]> for Hash {
     }
 }
 
-impl AsMut<[u8]> for Hash {
-    fn as_mut(&mut self) -> &mut [u8] {
-        &mut self.0
-    }
-}
-
 impl From<[u8; 32]> for Hash {
     fn from(bytes: [u8; 32]) -> Self {
         Self(bytes)
@@ -279,19 +225,10 @@ impl From<Hash> for [u8; 32] {
 
 impl fmt::Display for Hash {
     fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_hex())
-    }
-}
-
-impl fmt::LowerHex for Hash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        write!(f, "{}", self.to_hex())
-    }
-}
-
-impl fmt::UpperHex for Hash {
-    fn fmt(&self, f: &mut fmt::Formatter<'_>) -> fmt::Result {
-        self.0.iter().try_for_each(|b| write!(f, "{b:02X}"))
+        for b in &self.0 {
+            write!(f, "{b:02x}")?;
+        }
+        Ok(())
     }
 }
 
@@ -301,9 +238,8 @@ mod tests {
 
     #[test]
     fn hash_from_data() {
-        let data = b"hello world";
-        let hash1 = Hash::from_data(data);
-        let hash2 = Hash::from_data(data);
+        let hash1 = Hash::from_data(b"hello world");
+        let hash2 = Hash::from_data(b"hello world");
         assert_eq!(hash1, hash2);
         assert!(!hash1.is_zero());
     }
@@ -313,22 +249,7 @@ mod tests {
         let bytes = [42u8; 32];
         let hash = Hash::from_slice(&bytes[..]).unwrap();
         assert_eq!(hash.as_bytes(), &bytes);
-
-        let invalid = [0u8; 31];
-        assert!(Hash::from_slice(&invalid[..]).is_err());
-    }
-
-    #[test]
-    fn hash_hex_conversion() {
-        let hex = "0102030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
-        let hash = Hash::from_hex(hex).unwrap();
-        assert_eq!(hash.to_hex(), hex);
-
-        let invalid_length = "0102";
-        assert!(Hash::from_hex(invalid_length).is_err());
-
-        let invalid_hex = "zzzz030405060708090a0b0c0d0e0f101112131415161718191a1b1c1d1e1f20";
-        assert!(Hash::from_hex(invalid_hex).is_err());
+        assert!(Hash::from_slice(&[0u8; 31][..]).is_err());
     }
 
     #[test]
@@ -336,28 +257,68 @@ mod tests {
         let zero = Hash::zero();
         assert!(zero.is_zero());
         assert_eq!(zero, Hash::default());
-
-        let nonzero = Hash::from_data(b"nonzero");
-        assert!(!nonzero.is_zero());
+        assert!(!Hash::from_data(b"x").is_zero());
     }
 
     #[test]
     fn hash_display() {
         let hash = Hash::new([0xab; 32]);
-        let display = format!("{}", hash);
-        assert_eq!(display.len(), Hash::HEX_LEN);
+        let display = format!("{hash}");
+        assert_eq!(display.len(), 64);
         assert!(display.starts_with("abab"));
-
-        let upper = format!("{:X}", hash);
-        assert!(upper.starts_with("ABAB"));
     }
 
     #[test]
     fn bincode_serialization() {
         let hash = Hash::from_data(b"test");
-        let serialized = bincode::serde::encode_to_vec(&hash, bincode::config::standard()).unwrap();
-        let (deserialized, _): (Hash, _) =
-            bincode::serde::decode_from_slice(&serialized, bincode::config::standard()).unwrap();
-        assert_eq!(hash, deserialized);
+        let bytes = bincode::serde::encode_to_vec(&hash, bincode::config::standard()).unwrap();
+        let (decoded, _): (Hash, _) =
+            bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
+        assert_eq!(hash, decoded);
+    }
+
+    macro_rules! hasher_tests {
+        ($hasher:ty) => {
+            let data = b"test data";
+            let h1 = <$hasher>::hash(data);
+            let h2 = <$hasher>::hash(data);
+            assert_eq!(h1, h2);
+            assert_eq!(h1.len(), 32);
+
+            let left = [1u8; 32];
+            let right = [2u8; 32];
+            let c1 = <$hasher>::concat_and_hash(&left, Some(&right));
+            let c2 = <$hasher>::concat_and_hash(&left, Some(&right));
+            assert_eq!(c1, c2);
+            assert_ne!(c1, left);
+
+            let s1 = <$hasher>::concat_and_hash(&left, None);
+            let s2 = <$hasher>::concat_and_hash(&left, None);
+            assert_eq!(s1, s2);
+
+            let internal = <$hasher>::concat_and_hash(&left, Some(&right));
+            let mut fake_leaf = [0u8; 64];
+            fake_leaf[..32].copy_from_slice(&left);
+            fake_leaf[32..].copy_from_slice(&right);
+            let leaf = <$hasher>::hash(&fake_leaf);
+            assert_ne!(internal, leaf, "domain separation failed");
+        };
+    }
+
+    #[test]
+    fn sha3_hasher() {
+        hasher_tests!(Sha3H);
+    }
+
+    #[test]
+    #[cfg(feature = "blake3")]
+    fn blake3_hasher() {
+        hasher_tests!(Blake3H);
+    }
+
+    #[test]
+    #[cfg(feature = "poseidon")]
+    fn poseidon_hasher() {
+        hasher_tests!(PoseidonH);
     }
 }

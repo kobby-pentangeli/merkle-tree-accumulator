@@ -39,8 +39,6 @@ use crate::{Error, Hash, Result};
 pub struct MerkleTreeAccumulator<H: Hasher<Hash = [u8; 32]>> {
     /// Internal Merkle tree.
     tree: MerkleTree<H>,
-    /// Total number of elements added (accumulator height).
-    height: u64,
     /// Leaves that have been added to the accumulator.
     leaves: Vec<[u8; 32]>,
 }
@@ -54,8 +52,7 @@ impl<H: Hasher<Hash = [u8; 32]>> Default for MerkleTreeAccumulator<H> {
 impl<H: Hasher<Hash = [u8; 32]>> core::fmt::Debug for MerkleTreeAccumulator<H> {
     fn fmt(&self, f: &mut core::fmt::Formatter<'_>) -> core::fmt::Result {
         f.debug_struct("MerkleTreeAccumulator")
-            .field("height", &self.height)
-            .field("leaves_count", &self.leaves.len())
+            .field("height", &self.height())
             .finish_non_exhaustive()
     }
 }
@@ -75,7 +72,6 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
     pub fn new() -> Self {
         Self {
             tree: MerkleTree::new(),
-            height: 0,
             leaves: Vec::new(),
         }
     }
@@ -94,8 +90,9 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
     /// assert_eq!(acc.height(), 0);
     /// ```
     #[must_use]
-    pub const fn height(&self) -> u64 {
-        self.height
+    #[allow(clippy::cast_possible_truncation)]
+    pub fn height(&self) -> u64 {
+        self.leaves.len() as u64
     }
 
     /// Returns the root hash of the accumulator.
@@ -116,7 +113,7 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
     /// assert!(acc.root().is_ok());
     /// ```
     pub fn root(&self) -> Result<Hash> {
-        if self.height == 0 {
+        if self.leaves.is_empty() {
             return Err(Error::EmptyTree);
         }
         let root_hash = self.tree.root().ok_or(Error::EmptyTree)?;
@@ -141,8 +138,6 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
     pub fn add(&mut self, leaf: Hash) -> Result<()> {
         self.leaves.push(leaf.into_bytes());
         self.tree = MerkleTree::from_leaves(&self.leaves);
-        self.height += 1;
-
         Ok(())
     }
 
@@ -190,7 +185,8 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
     /// let proof = acc.prove(&[0, 3, 7]).unwrap();
     /// ```
     pub fn prove(&self, indices: &[u64]) -> Result<Proof> {
-        if self.height == 0 {
+        let height = self.height();
+        if height == 0 {
             return Err(Error::EmptyTree);
         }
 
@@ -201,10 +197,10 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
         }
 
         indices.iter().try_for_each(|&index| {
-            if index >= self.height {
+            if index >= height {
                 Err(Error::IndexOutOfBounds {
                     index,
-                    max: self.height.saturating_sub(1),
+                    max: height.saturating_sub(1),
                 })
             } else {
                 Ok(())
@@ -225,7 +221,7 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
         Ok(Proof {
             indices: indices.to_vec(),
             hashes: proof_hashes,
-            height: self.height,
+            height,
         })
     }
 
@@ -281,7 +277,7 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
             )));
         }
 
-        if self.height == 0 {
+        if self.leaves.is_empty() {
             return Err(Error::EmptyTree);
         }
 
@@ -311,8 +307,8 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
                 .root(&indices, &leaf_hashes, self.leaves.len())
                 .unwrap_or([0u8; 32]);
             Err(Error::InvalidProof {
-                expected: root.to_hex(),
-                actual: Hash::from(computed_root).to_hex(),
+                expected: root.to_string(),
+                actual: Hash::from(computed_root).to_string(),
             })
         }
     }
@@ -320,57 +316,28 @@ impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
     /// Serializes the accumulator to bytes using bincode.
     ///
     /// Note: The internal rs-merkle tree is reconstructed from leaves,
-    /// so we only serialize the leaves and metadata.
+    /// so we only serialize the leaves.
     ///
     /// # Errors
     ///
     /// Returns `Error::Serialization` if serialization fails.
     #[cfg(feature = "std")]
     pub fn to_bytes(&self) -> Result<Vec<u8>> {
-        let data = Accumulator {
-            height: self.height,
-            leaves: self.leaves.clone(),
-        };
-        bincode::serde::encode_to_vec(&data, bincode::config::standard()).map_err(Into::into)
+        bincode::serde::encode_to_vec(&self.leaves, bincode::config::standard()).map_err(Into::into)
     }
 
     /// Deserializes an accumulator from bytes.
     ///
     /// # Errors
     ///
-    /// Returns `Error::Serialization` if deserialization fails or if the
-    /// serialized data is inconsistent (e.g., height doesn't match leaf count).
+    /// Returns `Error::Serialization` if deserialization fails.
     #[cfg(feature = "std")]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
-        let (data, _): (Accumulator, _) =
+        let (leaves, _): (Vec<[u8; 32]>, _) =
             bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
-
-        // Validate integrity: height must match the number of leaves
-        #[allow(clippy::cast_possible_truncation)]
-        let leaf_count = data.leaves.len() as u64;
-        if data.height != leaf_count {
-            return Err(Error::Serialization(format!(
-                "Integrity check failed: height ({}) does not match leaf count ({})",
-                data.height, leaf_count
-            )));
-        }
-
-        let tree = MerkleTree::from_leaves(&data.leaves);
-
-        Ok(Self {
-            tree,
-            height: data.height,
-            leaves: data.leaves,
-        })
+        let tree = MerkleTree::from_leaves(&leaves);
+        Ok(Self { tree, leaves })
     }
-}
-
-/// Serialization helper for `MerkleTreeAccumulator`.
-#[cfg(feature = "std")]
-#[derive(Serialize, Deserialize)]
-struct Accumulator {
-    height: u64,
-    leaves: Vec<[u8; 32]>,
 }
 
 /// A cryptographic proof that one or more leaves exist in the accumulator.
@@ -454,9 +421,6 @@ impl Proof {
 mod tests {
     use super::*;
     use crate::Sha3Accumulator;
-    use crate::hash::Sha3H;
-
-    type TestAccumulator = MerkleTreeAccumulator<Sha3H>;
 
     #[test]
     fn new_accumulator() {
@@ -570,13 +534,10 @@ mod tests {
         acc.add(Hash::from_data(b"leaf2")).unwrap();
 
         let bytes = acc.to_bytes().unwrap();
-        let deserialized = TestAccumulator::from_bytes(&bytes).unwrap();
+        let deserialized = Sha3Accumulator::from_bytes(&bytes).unwrap();
 
         assert_eq!(acc.height(), deserialized.height());
-        assert_eq!(
-            acc.root().unwrap().to_hex(),
-            deserialized.root().unwrap().to_hex()
-        );
+        assert_eq!(acc.root().unwrap(), deserialized.root().unwrap());
     }
 
     #[test]
@@ -640,97 +601,61 @@ mod tests {
         assert!(acc.prove(&[0]).is_err());
     }
 
+    #[cfg(any(feature = "blake3", feature = "poseidon"))]
+    macro_rules! alt_hasher_tests {
+        ($acc:ty) => {
+            let mut alt_acc = <$acc>::new();
+            let mut sha3_acc = Sha3Accumulator::new();
+
+            let leaf1 = Hash::from_data(b"data1");
+            let leaf2 = Hash::from_data(b"data2");
+
+            alt_acc.add(leaf1).unwrap();
+            alt_acc.add(leaf2).unwrap();
+            sha3_acc.add(leaf1).unwrap();
+            sha3_acc.add(leaf2).unwrap();
+
+            assert_eq!(alt_acc.height(), 2);
+            assert_eq!(sha3_acc.height(), 2);
+
+            // Roots differ because of different hash functions
+            assert_ne!(alt_acc.root().unwrap(), sha3_acc.root().unwrap());
+
+            // Single proof
+            let proof = alt_acc.prove(&[0]).unwrap();
+            assert!(alt_acc.verify(&proof, &[leaf1]).is_ok());
+
+            // Batch proof
+            let leaf3 = Hash::from_data(b"data3");
+            let leaf4 = Hash::from_data(b"data4");
+            let leaf5 = Hash::from_data(b"data5");
+            let leaf6 = Hash::from_data(b"data6");
+            let leaf7 = Hash::from_data(b"data7");
+
+            alt_acc.add(leaf3).unwrap();
+            alt_acc.add(leaf4).unwrap();
+            alt_acc.add(leaf5).unwrap();
+            alt_acc.add(leaf6).unwrap();
+            alt_acc.add(leaf7).unwrap();
+
+            let batch_proof = alt_acc.prove(&[0, 3, 5]).unwrap();
+            let leaves = vec![leaf1, leaf4, leaf6];
+            assert!(alt_acc.verify(&batch_proof, &leaves).is_ok());
+        };
+    }
+
     #[test]
     #[cfg(feature = "blake3")]
     fn blake3_hasher_works() {
-        use crate::hash::Blake3H;
-
-        type Blake3Acc = MerkleTreeAccumulator<Blake3H>;
-
-        let mut blake3_acc = Blake3Acc::new();
-        let mut sha3_acc = TestAccumulator::new();
-
-        let leaf1 = Hash::from_data(b"data1");
-        let leaf2 = Hash::from_data(b"data2");
-
-        // Add same leaves to both accumulators
-        blake3_acc.add(leaf1).unwrap();
-        blake3_acc.add(leaf2).unwrap();
-        sha3_acc.add(leaf1).unwrap();
-        sha3_acc.add(leaf2).unwrap();
-
-        assert_eq!(blake3_acc.height(), 2);
-        assert_eq!(sha3_acc.height(), 2);
-
-        // Roots should be different because different hash functions
-        assert_ne!(blake3_acc.root().unwrap(), sha3_acc.root().unwrap());
-
-        // Proofs should work with BLAKE3 hasher
-        let proof = blake3_acc.prove(&[0]).unwrap();
-        assert!(blake3_acc.verify(&proof, &[leaf1]).is_ok());
-
-        // Batch proofs should work with BLAKE3 hasher
-        let leaf3 = Hash::from_data(b"data3");
-        let leaf4 = Hash::from_data(b"data4");
-        let leaf5 = Hash::from_data(b"data5");
-        let leaf6 = Hash::from_data(b"data6");
-        let leaf7 = Hash::from_data(b"data7");
-
-        blake3_acc.add(leaf3).unwrap();
-        blake3_acc.add(leaf4).unwrap();
-        blake3_acc.add(leaf5).unwrap();
-        blake3_acc.add(leaf6).unwrap();
-        blake3_acc.add(leaf7).unwrap();
-
-        let batch_proof = blake3_acc.prove(&[0, 3, 5]).unwrap();
-        let leaves = vec![leaf1, leaf4, leaf6];
-        assert!(blake3_acc.verify(&batch_proof, &leaves).is_ok());
+        use crate::Blake3Accumulator;
+        alt_hasher_tests!(Blake3Accumulator);
     }
 
     #[test]
     #[cfg(feature = "poseidon")]
     fn poseidon_hasher_works() {
-        use crate::hash::PoseidonH;
-
-        type PoseidonAcc = MerkleTreeAccumulator<PoseidonH>;
-
-        let mut poseidon_acc = PoseidonAcc::new();
-        let mut sha3_acc = TestAccumulator::new();
-
-        let leaf1 = Hash::from_data(b"data1");
-        let leaf2 = Hash::from_data(b"data2");
-
-        poseidon_acc.add(leaf1).unwrap();
-        poseidon_acc.add(leaf2).unwrap();
-        sha3_acc.add(leaf1).unwrap();
-        sha3_acc.add(leaf2).unwrap();
-
-        assert_eq!(poseidon_acc.height(), 2);
-        assert_eq!(sha3_acc.height(), 2);
-
-        // Roots should be different because different hash functions
-        assert_ne!(poseidon_acc.root().unwrap(), sha3_acc.root().unwrap());
-
-        // Proofs should work with Poseidon hasher
-        let proof = poseidon_acc.prove(&[0]).unwrap();
-        assert!(poseidon_acc.verify(&proof, &[leaf1]).is_ok());
-
-        // Batch proofs should work with Poseidon hasher
-        let leaf3 = Hash::from_data(b"data3");
-        let leaf4 = Hash::from_data(b"data4");
-        let leaf5 = Hash::from_data(b"data5");
-        let leaf6 = Hash::from_data(b"data6");
-        let leaf7 = Hash::from_data(b"data7");
-
-        poseidon_acc.add(leaf3).unwrap();
-        poseidon_acc.add(leaf4).unwrap();
-        poseidon_acc.add(leaf5).unwrap();
-        poseidon_acc.add(leaf6).unwrap();
-        poseidon_acc.add(leaf7).unwrap();
-
-        let batch_proof = poseidon_acc.prove(&[0, 3, 5]).unwrap();
-        let leaves = vec![leaf1, leaf4, leaf6];
-        assert!(poseidon_acc.verify(&batch_proof, &leaves).is_ok());
+        use crate::PoseidonAccumulator;
+        alt_hasher_tests!(PoseidonAccumulator);
     }
 
     #[test]
