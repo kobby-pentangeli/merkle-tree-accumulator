@@ -302,7 +302,7 @@ mod tests {
     #[test]
     fn bincode_serialization() {
         let hash = Hash::from_data(b"test");
-        let bytes = bincode::serde::encode_to_vec(&hash, bincode::config::standard()).unwrap();
+        let bytes = bincode::serde::encode_to_vec(hash, bincode::config::standard()).unwrap();
         let (decoded, _): (Hash, _) =
             bincode::serde::decode_from_slice(&bytes, bincode::config::standard()).unwrap();
         assert_eq!(hash, decoded);
