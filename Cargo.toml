@@ -1,21 +1,46 @@
 [package]
 name = "merkle-tree-accumulator"
-version = "0.2.0"
-description = "Pure Rust implementation of a Merkle tree accumulator"
+version = "0.3.0"
+description = "A simple, append-only Merkle tree-based cryptographic accumulator"
 authors = ["Kobby Pentangeli <kobbypentangeli@gmail.com>"]
 repository = "https://github.com/kobby-pentangeli/merkle-tree-accumulator"
-license = "MIT"
-edition = "2018"
-keywords = ["merkle", "accumulator", "webassembly"]
-categories = ["wasm"]
+license = "MIT OR Apache-2.0"
+readme = "README.md"
+edition = "2024"
+rust-version = "1.85"
+keywords = ["merkle-tree", "accumulator", "proofs"]
+categories = ["cryptography"]
 
 [lib]
 crate-type = ["cdylib", "rlib"]
 
 [dependencies]
-byteorder = "1.4.3"
-near-sdk = "3.1.0"
-thiserror = "1.0.29"
-tiny-keccak = { version = "2.0", features = ["sha3"] }
-rlp = "0.5.1"
-safe-transmute = "0.11.2"
+serde = { version = "1.0", features = ["derive"], default-features = false }
+bincode = { version = "2.0", features = ["serde"] }
+thiserror = "2"
+digest = { version = "0.10", default-features = false }
+sha3 = { version = "0.10", default-features = false }
+blake3 = { version = "1.5", optional = true, default-features = false }
+rs_merkle = "1.5"
+neptune = { version = "13.0", optional = true, default-features = false, features = [
+    "bls",
+    "arity2",
+    "arity4",
+    "arity8",
+] }
+blstrs = { version = "0.7", optional = true }
+ff = { version = "0.13", optional = true }
+generic-array = { version = "1.3", optional = true }
+typenum = { version = "1.17", optional = true }
+
+[features]
+default = ["std"]
+std = ["serde/std", "digest/std", "sha3/std"]
+blake3 = ["dep:blake3"]
+poseidon = [
+    "dep:neptune",
+    "dep:blstrs",
+    "dep:ff",
+    "dep:generic-array",
+    "dep:typenum",
+]
