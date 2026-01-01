@@ -57,6 +57,14 @@ impl<H: Hasher<Hash = [u8; 32]>> core::fmt::Debug for MerkleTreeAccumulator<H> {
     }
 }
 
+impl<H: Hasher<Hash = [u8; 32]>> PartialEq for MerkleTreeAccumulator<H> {
+    fn eq(&self, other: &Self) -> bool {
+        self.leaves == other.leaves
+    }
+}
+
+impl<H: Hasher<Hash = [u8; 32]>> Eq for MerkleTreeAccumulator<H> {}
+
 impl<H: Hasher<Hash = [u8; 32]>> MerkleTreeAccumulator<H> {
     /// Creates a new empty accumulator.
     ///
@@ -408,11 +416,19 @@ impl Proof {
     ///
     /// # Errors
     ///
-    /// Returns `Error::Serialization` if deserialization fails.
+    /// Returns `Error::Serialization` if deserialization fails or if the
+    /// proof data is malformed.
     #[cfg(feature = "std")]
     pub fn from_bytes(bytes: &[u8]) -> Result<Self> {
         let (proof, _): (Self, _) =
             bincode::serde::decode_from_slice(bytes, bincode::config::standard())?;
+
+        if proof.indices.is_empty() && !proof.hashes.is_empty() {
+            return Err(Error::Serialization(
+                "Invalid proof: has hashes but no indices".into(),
+            ));
+        }
+
         Ok(proof)
     }
 }

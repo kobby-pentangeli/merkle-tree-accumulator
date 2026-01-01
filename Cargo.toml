@@ -8,7 +8,7 @@ license = "MIT OR Apache-2.0"
 readme = "README.md"
 edition = "2024"
 rust-version = "1.85"
-keywords = ["merkle-tree", "accumulator"]
+keywords = ["merkle-tree", "accumulator", "proofs"]
 categories = ["cryptography"]
 
 [lib]

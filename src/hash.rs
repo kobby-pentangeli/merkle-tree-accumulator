@@ -11,6 +11,12 @@ use crate::Result;
 const LEAF_HASH_PREFIX: u8 = 0x00;
 const INTERNAL_HASH_PREFIX: u8 = 0x01;
 
+/// Cached Poseidon constants for performance (computing these is expensive).
+#[cfg(all(feature = "poseidon", feature = "std"))]
+static POSEIDON_CONSTANTS: std::sync::LazyLock<
+    neptune::poseidon::PoseidonConstants<blstrs::Scalar, typenum::U4>,
+> = std::sync::LazyLock::new(neptune::poseidon::PoseidonConstants::new);
+
 /// SHA3-256 hasher for Merkle tree operations.
 #[derive(Clone, Copy, Debug)]
 pub struct Sha3H;
@@ -77,9 +83,8 @@ impl Hasher for PoseidonH {
         use ff::Field;
         use generic_array::GenericArray;
         use neptune::Poseidon;
-        use neptune::poseidon::PoseidonConstants;
 
-        let constants = PoseidonConstants::<Scalar, typenum::U4>::new();
+        let constants = poseidon_constants();
         let domain_tag = Scalar::from(u64::from(LEAF_HASH_PREFIX));
 
         let field_element = if data.len() <= 32 {
@@ -94,7 +99,7 @@ impl Hasher for PoseidonH {
         };
 
         let preimage = GenericArray::from([domain_tag, field_element, Scalar::ZERO, Scalar::ZERO]);
-        let hash_result = Poseidon::new_with_preimage(&preimage, &constants).hash();
+        let hash_result = Poseidon::new_with_preimage(&preimage, constants).hash();
         poseidon_scalar_to_bytes(&hash_result)
     }
 
@@ -103,9 +108,8 @@ impl Hasher for PoseidonH {
         use ff::Field;
         use generic_array::GenericArray;
         use neptune::Poseidon;
-        use neptune::poseidon::PoseidonConstants;
 
-        let constants = PoseidonConstants::<Scalar, typenum::U4>::new();
+        let constants = poseidon_constants();
         let domain_tag = Scalar::from(u64::from(INTERNAL_HASH_PREFIX));
         let left_scalar = poseidon_bytes_to_scalar(left);
 
@@ -113,25 +117,52 @@ impl Hasher for PoseidonH {
             || {
                 let preimage =
                     GenericArray::from([domain_tag, left_scalar, Scalar::ZERO, Scalar::ZERO]);
-                Poseidon::new_with_preimage(&preimage, &constants).hash()
+                Poseidon::new_with_preimage(&preimage, constants).hash()
             },
             |right| {
                 let right_scalar = poseidon_bytes_to_scalar(right);
                 let preimage =
                     GenericArray::from([domain_tag, left_scalar, right_scalar, Scalar::ZERO]);
-                Poseidon::new_with_preimage(&preimage, &constants).hash()
+                Poseidon::new_with_preimage(&preimage, constants).hash()
             },
         );
         poseidon_scalar_to_bytes(&hash_result)
     }
 }
 
+#[cfg(all(feature = "poseidon", feature = "std"))]
+fn poseidon_constants() -> &'static neptune::poseidon::PoseidonConstants<blstrs::Scalar, typenum::U4>
+{
+    &POSEIDON_CONSTANTS
+}
+
+#[cfg(all(feature = "poseidon", not(feature = "std")))]
+fn poseidon_constants() -> neptune::poseidon::PoseidonConstants<blstrs::Scalar, typenum::U4> {
+    neptune::poseidon::PoseidonConstants::new()
+}
+
 #[cfg(feature = "poseidon")]
 fn poseidon_bytes_to_scalar(bytes: &[u8; 32]) -> blstrs::Scalar {
-    use ff::{Field, PrimeField};
-    let mut repr = [0u8; 32];
-    repr[..31].copy_from_slice(&bytes[..31]);
-    blstrs::Scalar::from_repr(repr).unwrap_or(blstrs::Scalar::ZERO)
+    use digest::Digest;
+    use ff::PrimeField;
+
+    // Try direct conversion (succeeds when value < field modulus, ~50% of inputs)
+    if let Some(scalar) = blstrs::Scalar::from_repr(*bytes).into() {
+        return scalar;
+    }
+
+    // For values >= modulus, hash with counter until valid (preserves entropy)
+    let mut counter = 0u8;
+    loop {
+        let mut hasher = sha3::Sha3_256::new();
+        hasher.update(bytes);
+        hasher.update([counter]);
+        let hash: [u8; 32] = hasher.finalize().into();
+        if let Some(scalar) = blstrs::Scalar::from_repr(hash).into() {
+            return scalar;
+        }
+        counter = counter.wrapping_add(1);
+    }
 }
 
 #[cfg(feature = "poseidon")]
